@@ -1,0 +1,10 @@
+{
+  "sample_file": "/home/batman/Desktop/researchproject/data/processed/images/00000_authentic.png",
+  "sha256": "b5656334ca25afc632a303eff36aeac74b94265bbc86cf1b29ca4f8193dacd9a",
+  "reference_hash_matches": true,
+  "mutated_file_rejected": true,
+  "aes_gcm_round_trip": true,
+  "aes_gcm_modified_ciphertext_rejected": true,
+  "encryption_error": null,
+  "checked_at_utc": "2026-10-23T18:12:11.135249+00:00"
+}

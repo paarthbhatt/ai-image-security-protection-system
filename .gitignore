@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+.venv/
+
+# Local app orchestration metadata is not part of the research project.
+.omnirush/
+
+# The interrupted large download is not a usable dataset and should not be pushed.
+data/raw/cifar-10-python.tar.gz
+data/raw/cifar-10-batches-py/

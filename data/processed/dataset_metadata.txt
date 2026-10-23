@@ -1,0 +1,5 @@
+Requested source: CIFAR-10 official URL: https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz
+Actual source used: scikit-learn digits fallback (8x8 grayscale, upscaled to 32x32 RGB)
+source_images=500
+seed=42
+split=train/validation/test by source image before manipulation
