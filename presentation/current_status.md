@@ -8,15 +8,17 @@ checks cryptographic protection, and generates visual evidence.
 
 ## 2. What we can show today
 
-- **Dataset:** 1,000 image instances from
-  500 source groups (scikit-learn digits fallback (8x8 grayscale, upscaled to 32x32 RGB)); balanced
+- **Dataset:** 10,000 image instances from
+  5,000 source groups (CIFAR-10 (natural images, 32x32)); balanced
   authentic/manipulated labels.
-- **Manipulations:** copy-move, splicing, brightness manipulation, and JPEG
-  recompression.
-- **Model:** standardised handcrafted forensic features + balanced logistic
-  regression; 22 features.
-- **Held-out test:** ROC-AUC **0.939**, PR-AUC **0.952**,
-  balanced accuracy **0.873**, F1 **0.871**.
+- **Manipulations:** copy_move, removal, splicing.
+- **Model:** logistic_regression over 143
+  forensic features (selected on validation ROC-AUC from hist_gradient_boosting, logistic_regression, random_forest).
+- **Held-out test:** ROC-AUC **0.657** (95% CI 0.632–0.681),
+  PR-AUC **0.643**, balanced accuracy **0.603**, F1 **0.589**.
+- **Leakage check:** no source group appears in two splits — **True**.
+- **Training augmentation:** 14,000 extra rows from
+  jpeg_q70, jpeg_q30, noise, blur (never from test data).
 - **Protection:** original hash match = **True**;
   mutated file rejected = **True**;
   AES-GCM round trip = **True**;

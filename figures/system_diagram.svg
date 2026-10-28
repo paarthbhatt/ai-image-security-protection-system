@@ -6,7 +6,7 @@
   <rdf:RDF xmlns:dc="http://purl.org/dc/elements/1.1/" xmlns:cc="http://creativecommons.org/ns#" xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#">
    <cc:Work>
     <dc:type rdf:resource="http://purl.org/dc/dcmitype/StillImage"/>
-    <dc:date>2026-10-23T18:12:12.701455</dc:date>
+    <dc:date>2026-10-24T17:51:47.538972</dc:date>
     <dc:format>image/svg+xml</dc:format>
     <dc:creator>
      <cc:Agent>
@@ -35,7 +35,7 @@ L 168.978462 164.61
 L 168.978462 87.39 
 L 28.301538 87.39 
 z
-" clip-path="url(#p0de58f92e4)" style="fill: #eff6ff; stroke: #172554; stroke-width: 1.4"/>
+" clip-path="url(#p074a4ac98a)" style="fill: #eff6ff; stroke: #172554; stroke-width: 1.4"/>
    </g>
    <g id="patch_3">
     <path d="M 204.147692 164.61 
@@ -43,7 +43,7 @@ L 344.824615 164.61
 L 344.824615 87.39 
 L 204.147692 87.39 
 z
-" clip-path="url(#p0de58f92e4)" style="fill: #ecfdf5; stroke: #172554; stroke-width: 1.4"/>
+" clip-path="url(#p074a4ac98a)" style="fill: #ecfdf5; stroke: #172554; stroke-width: 1.4"/>
    </g>
    <g id="patch_4">
     <path d="M 379.993846 164.61 
@@ -51,7 +51,7 @@ L 520.670769 164.61
 L 520.670769 87.39 
 L 379.993846 87.39 
 z
-" clip-path="url(#p0de58f92e4)" style="fill: #eff6ff; stroke: #172554; stroke-width: 1.4"/>
+" clip-path="url(#p074a4ac98a)" style="fill: #eff6ff; stroke: #172554; stroke-width: 1.4"/>
    </g>
    <g id="patch_5">
     <path d="M 555.84 164.61 
@@ -59,7 +59,7 @@ L 696.516923 164.61
 L 696.516923 87.39 
 L 555.84 87.39 
 z
-" clip-path="url(#p0de58f92e4)" style="fill: #fff7ed; stroke: #172554; stroke-width: 1.4"/>
+" clip-path="url(#p074a4ac98a)" style="fill: #fff7ed; stroke: #172554; stroke-width: 1.4"/>
    </g>
    <g id="patch_6">
     <path d="M 731.686154 164.61 
@@ -67,7 +67,7 @@ L 872.363077 164.61
 L 872.363077 87.39 
 L 731.686154 87.39 
 z
-" clip-path="url(#p0de58f92e4)" style="fill: #fdf2f8; stroke: #172554; stroke-width: 1.4"/>
+" clip-path="url(#p074a4ac98a)" style="fill: #fdf2f8; stroke: #172554; stroke-width: 1.4"/>
    </g>
    <g id="text_1">
     <!-- Input image -->
@@ -1764,7 +1764,7 @@ z
   </g>
  </g>
  <defs>
-  <clipPath id="p0de58f92e4">
+  <clipPath id="p074a4ac98a">
    <rect x="7.2" y="7.2" width="914.4" height="237.6"/>
   </clipPath>
  </defs>

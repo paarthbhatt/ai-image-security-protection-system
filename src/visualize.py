@@ -110,19 +110,23 @@ def generate_figures(frame: pd.DataFrame, results: dict[str, object], figure_dir
     _save(fig, figure_dir / "confusion_matrix.png")
     generated.append("confusion_matrix.png")
 
-    # 5. Interpretable coefficients.
-    coefficients = results["feature_coefficients"][:12]
-    coefficients = list(reversed(coefficients))
+    # 5. Model feature importances.
+    importances = results.get("feature_importances") or []
+    top = list(reversed(importances[:12]))
     fig, ax = plt.subplots(figsize=(8, 5.5))
-    names = [entry["feature"] for entry in coefficients]
-    values = [entry["coefficient"] for entry in coefficients]
-    colors = [PALETTE["red"] if value > 0 else PALETTE["cyan"] for value in values]
-    ax.barh(names, values, color=colors)
-    ax.axvline(0, color=PALETTE["slate"], linewidth=0.8)
-    ax.set_xlabel("Logistic-regression coefficient (scaled feature)")
-    _style(ax, "Most influential forensic features")
-    _save(fig, figure_dir / "feature_coefficients.png")
-    generated.append("feature_coefficients.png")
+    if top:
+        names = [entry["feature"] for entry in top]
+        values = [entry["value"] for entry in top]
+        colors = [PALETTE["red"] if value > 0 else PALETTE["cyan"] for value in values]
+        ax.barh(names, values, color=colors)
+        ax.axvline(0, color=PALETTE["slate"], linewidth=0.8)
+        ax.set_xlabel("Signed contribution of the selected model")
+        _style(ax, "Most influential forensic features")
+    else:
+        ax.text(0.5, 0.5, "Selected model exposes no global importances", ha="center", va="center")
+        ax.axis("off")
+    _save(fig, figure_dir / "feature_importances.png")
+    generated.append("feature_importances.png")
 
     # 6. Robustness sweep.
     robustness = results["robustness"]
@@ -222,7 +226,7 @@ def write_presentation_artifacts(
         ("Model comparison", "model_comparison.png"),
         ("ROC and PR curves", "roc_pr_curves.png"),
         ("Confusion matrix", "confusion_matrix.png"),
-        ("Feature explanation", "feature_coefficients.png"),
+        ("Feature explanation", "feature_importances.png"),
         ("Robustness", "robustness.png"),
         ("Sample pairs", "sample_pairs.png"),
     ]
@@ -231,8 +235,14 @@ def write_presentation_artifacts(
         for title, filename in html_images
     )
     tamper_rows = "".join(
-        f"<tr><td>{name}</td><td>{entry['count']}</td><td>{entry['recall']:.3f}</td><td>{entry['mean_risk_score']:.3f}</td></tr>"
-        for name, entry in results["per_tamper_type"].items()
+        f"<tr><td>{name}</td><td>{entry['count']}</td><td>{entry['roc_auc']:.3f}</td>"
+        f"<td>{entry['recall']:.3f}</td><td>{entry['mean_risk_score']:.3f}</td></tr>"
+        for name, entry in results.get("per_family", {}).items()
+    )
+    model_rows = "".join(
+        f"<tr><td>{name}</td><td>{entry['test']['roc_auc']:.3f}</td>"
+        f"<td>{entry['test']['balanced_accuracy']:.3f}</td><td>{entry['test']['f1']:.3f}</td></tr>"
+        for name, entry in results.get("model_comparison", {}).items()
     )
     html = f"""<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><title>AI Image Security — Current Status</title>
@@ -247,9 +257,10 @@ body{{font-family:Inter,system-ui,sans-serif;background:#f8fafc;color:#172554;ma
 <div class="metric"><span>Source groups</span><b>{results['experiment']['source_groups']:,}</b><small>split before manipulation</small></div>
 <div class="metric"><span>Hash + AES checks</span><b>{int(protection['reference_hash_matches']) + int(protection['mutated_file_rejected']) + int(protection['aes_gcm_round_trip']) + int(protection['aes_gcm_modified_ciphertext_rejected'])}/4</b><small>local protection demo</small></div>
 </div>
-<div class="note"><b>Interpretation:</b> this is a functioning research baseline. The pilot source is <b>{results['experiment']['data_source']}</b> with controlled synthetic edits, so the results demonstrate pipeline progress rather than production-level forensic accuracy.</div>
+<div class="note"><b>Interpretation:</b> this is a functioning research baseline. The current corpus is <b>{results['experiment']['corpus']}</b>, evaluated on source-grouped splits with the leakage check <b>{'passed' if results['group_leakage_check']['passed'] else 'FAILED'}</b>. Synthetic manipulations still bound how far these numbers generalise.</div>
 <h2>System and visual evidence</h2><div class="gallery">{cards}</div>
-<h2>Per-manipulation evidence</h2><table><thead><tr><th>Manipulation</th><th>Test count</th><th>Recall</th><th>Mean risk score</th></tr></thead><tbody>{tamper_rows}</tbody></table>
+<h2>Model comparison (held-out test)</h2><table><thead><tr><th>Model</th><th>ROC-AUC</th><th>Balanced accuracy</th><th>F1</th></tr></thead><tbody>{model_rows}</tbody></table>
+<h2>Per-manipulation evidence</h2><table><thead><tr><th>Manipulation</th><th>Test count</th><th>ROC-AUC (vs authentic)</th><th>Recall</th><th>Mean risk score</th></tr></thead><tbody>{tamper_rows}</tbody></table>
 <h2>Protection checks</h2><pre>{json.dumps(protection, indent=2)}</pre>
 <h2>Next research milestone</h2><p>Add CASIA v2.0 and CoMoFoD small, group all variants by source scene, keep one external dataset untouched, and compare this interpretable baseline against a small CNN. Report AUROC, PR-AUC, balanced accuracy, calibration, and robustness by JPEG quality.</p>
 </main></body></html>"""
@@ -266,14 +277,16 @@ checks cryptographic protection, and generates visual evidence.
 ## 2. What we can show today
 
 - **Dataset:** {results['experiment']['image_instances']:,} image instances from
-  {results['experiment']['source_groups']:,} source groups ({results['experiment']['data_source']}); balanced
+  {results['experiment']['source_groups']:,} source groups ({results['experiment']['corpus']}); balanced
   authentic/manipulated labels.
-- **Manipulations:** copy-move, splicing, brightness manipulation, and JPEG
-  recompression.
-- **Model:** standardised handcrafted forensic features + balanced logistic
-  regression; {results['experiment']['feature_count']} features.
-- **Held-out test:** ROC-AUC **{test['roc_auc']:.3f}**, PR-AUC **{test['pr_auc']:.3f}**,
-  balanced accuracy **{test['balanced_accuracy']:.3f}**, F1 **{test['f1']:.3f}**.
+- **Manipulations:** {', '.join(results.get('per_family', {}).keys()) or 'none'}.
+- **Model:** {results['experiment']['selected_model']} over {results['experiment']['feature_count']}
+  forensic features (selected on validation ROC-AUC from {', '.join(results['experiment']['models_compared'])}).
+- **Held-out test:** ROC-AUC **{test['roc_auc']:.3f}** (95% CI {results['confidence_intervals']['test_roc_auc'][0]:.3f}–{results['confidence_intervals']['test_roc_auc'][1]:.3f}),
+  PR-AUC **{test['pr_auc']:.3f}**, balanced accuracy **{test['balanced_accuracy']:.3f}**, F1 **{test['f1']:.3f}**.
+- **Leakage check:** no source group appears in two splits — **{results['group_leakage_check']['passed']}**.
+- **Training augmentation:** {results['experiment']['augmentation']['extra_training_rows']:,} extra rows from
+  {', '.join(results['experiment']['augmentation']['conditions']) or 'none'} (never from test data).
 - **Protection:** original hash match = **{protection['reference_hash_matches']}**;
   mutated file rejected = **{protection['mutated_file_rejected']}**;
   AES-GCM round trip = **{protection['aes_gcm_round_trip']}**;

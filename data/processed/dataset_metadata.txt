@@ -1,5 +1,10 @@
-Requested source: CIFAR-10 official URL: https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz
-Actual source used: scikit-learn digits fallback (8x8 grayscale, upscaled to 32x32 RGB)
-source_images=500
+corpus=CIFAR-10 (natural images, 32x32)
+dataset_key=cifar10
+source_images=5000
 seed=42
-split=train/validation/test by source image before manipulation
+rows=10000
+manipulation_version=2024-05-feathered-copy-move-splice-removal
+content_digest=8b5c7e92b8197d5eadc467e8acda6422
+families=copy_move,splicing,removal
+split=train/validation/test grouped by source_id before manipulation
+manipulations=synthetic (alpha-feathered), with ground-truth masks

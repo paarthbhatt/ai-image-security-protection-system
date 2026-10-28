@@ -5,6 +5,40 @@ __pycache__/
 # Local app orchestration metadata is not part of the research project.
 .omnirush/
 
-# The interrupted large download is not a usable dataset and should not be pushed.
-data/raw/cifar-10-python.tar.gz
+# Scratch space: logs, one-off checks, downloaded fragments.
+.work/
+
+# --- Datasets -------------------------------------------------------------
+# CIFAR-10 is fetched and verified by src/sources.py; never commit it. The
+# ``.part`` file is an interrupted download and is not a usable dataset.
+data/raw/*.tar.gz
+data/raw/*.tar.gz.part
 data/raw/cifar-10-batches-py/
+data/raw/_cifar_extract/
+
+# Manually downloaded real benchmarks are large and licence-bound.
+data/real/
+
+# --- Generated benchmark artifacts ---------------------------------------
+# Images and masks are derived from the source corpus on every build: 10,000
+# files for the default run, and they are recreated deterministically. Only the
+# small CSV and metadata sidecar that describe the benchmark are committed.
+data/processed/images/
+data/processed/masks/
+data/processed/visual_samples/
+
+# Feature matrices are a cache, keyed to the local image files. Committing them
+# would ship a stale cache that no other checkout can validate.
+data/processed/features*.npz
+
+# Per-seed reruns of the pipeline.
+data/processed/seed_*/
+
+# Per-dataset metadata snapshots, regenerated from data/real/ on demand.
+data/processed/benchmark_*.csv
+
+# --- Model and report artifacts ------------------------------------------
+# Kept, but ignore the editor and OS noise that shows up next to them.
+.DS_Store
+*.swp
+*.orig

@@ -38,7 +38,25 @@ def decrypt_bytes(nonce: bytes, ciphertext: bytes, key: bytes) -> bytes:
     return AESGCM(key).decrypt(nonce, ciphertext, None)
 
 
-def run_protection_checks(sample_path: str | Path, output_dir: Path) -> dict[str, object]:
+def _portable_reference(path: Path, root: Path | None) -> str:
+    """Describe ``path`` without baking one machine's home directory into a report.
+
+    The audit record is committed, so an absolute path would both break on any
+    other checkout and leak the local layout. Fall back to the file name when the
+    file sits outside ``root``, because a wrong relative path is worse than an
+    honest short one.
+    """
+    if root is None:
+        return path.name
+    try:
+        return path.resolve().relative_to(root.resolve()).as_posix()
+    except ValueError:
+        return path.name
+
+
+def run_protection_checks(
+    sample_path: str | Path, output_dir: Path, root: Path | None = None
+) -> dict[str, object]:
     """Run deterministic hash and authenticated-encryption demonstrations."""
     output_dir.mkdir(parents=True, exist_ok=True)
     path = Path(sample_path)
@@ -69,7 +87,7 @@ def run_protection_checks(sample_path: str | Path, output_dir: Path) -> dict[str
         error = str(exc)
 
     result = {
-        "sample_file": str(path),
+        "sample_file": _portable_reference(path, root),
         "sha256": original_hash,
         "reference_hash_matches": hash_check,
         "mutated_file_rejected": hash_rejects_mutation,

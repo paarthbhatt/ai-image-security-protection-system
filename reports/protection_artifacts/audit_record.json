@@ -1,10 +1,10 @@
 {
-  "sample_file": "/home/batman/Desktop/researchproject/data/processed/images/00000_authentic.png",
-  "sha256": "b5656334ca25afc632a303eff36aeac74b94265bbc86cf1b29ca4f8193dacd9a",
+  "sample_file": "data/processed/images/00005_authentic.png",
+  "sha256": "382e5a21f72c8c4912dd84abb88640777350e95e25781e0df5fad9a4b9dc5650",
   "reference_hash_matches": true,
   "mutated_file_rejected": true,
   "aes_gcm_round_trip": true,
   "aes_gcm_modified_ciphertext_rejected": true,
   "encryption_error": null,
-  "checked_at_utc": "2026-10-23T18:12:11.135249+00:00"
+  "checked_at_utc": "2026-10-24T12:21:45.539909+00:00"
 }
