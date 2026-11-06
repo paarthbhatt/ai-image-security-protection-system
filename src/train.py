@@ -33,6 +33,7 @@ from sklearn.metrics import (
     balanced_accuracy_score,
     confusion_matrix,
     f1_score,
+    matthews_corrcoef,
     precision_recall_curve,
     precision_score,
     recall_score,
@@ -105,12 +106,31 @@ def _metrics(y_true: np.ndarray, probabilities: np.ndarray, threshold: float) ->
         "f1": float(f1_score(y_true, predictions, zero_division=0)),
         "roc_auc": float(roc_auc_score(y_true, probabilities)),
         "pr_auc": float(average_precision_score(y_true, probabilities)),
+        # Reported by every comparison table in the forensic literature, and it
+        # is the only headline metric here that stays meaningful when the class
+        # counts change, which matters as soon as the set is balanced.
+        "mcc": float(matthews_corrcoef(y_true, predictions)),
         "confusion_matrix": confusion_matrix(y_true, predictions).tolist(),
     }
 
 
-def _select_threshold(y_true: np.ndarray, probabilities: np.ndarray) -> float:
-    """Pick the threshold maximising balanced accuracy on validation only."""
+def evaluate_probabilities(
+    y_true: np.ndarray, probabilities: np.ndarray, threshold: float
+) -> dict[str, object]:
+    """Public entry to the metric block, so a second evaluator cannot drift.
+
+    Cross-dataset scoring has to use the identical definitions, or an external
+    number would differ from the in-domain one by more than the data does.
+    """
+    return _metrics(y_true, probabilities, threshold)
+
+
+def select_threshold(y_true: np.ndarray, probabilities: np.ndarray) -> float:
+    """Pick the threshold maximising balanced accuracy on validation only.
+
+    Public because the deep baseline has to use this exact rule: two decision
+    rules in one report is two headlines that do not mean the same thing.
+    """
     candidates = np.linspace(0.05, 0.95, 181)
     scores = [balanced_accuracy_score(y_true, probabilities >= threshold) for threshold in candidates]
     return float(candidates[int(np.argmax(scores))])
@@ -332,20 +352,35 @@ def train_and_evaluate(
     augment_conditions: tuple[str, ...] = (),
     augmentation_fraction: float = 0.5,
     recompute_features: bool = False,
+    localise_limit: int = 240,
+    feature_cache_root: Path | None = None,
 ) -> tuple[object, dict[str, object], list[str]]:
-    """Extract features, train every candidate model, evaluate, and persist evidence."""
+    """Extract features, train every candidate model, evaluate, and persist evidence.
+
+    ``feature_cache_root`` says where an existing extraction may be *read* from
+    when this run writes its own artifacts elsewhere. It exists for ``--seeds``:
+    a variance pass puts each seed in its own directory, found no cache there, and
+    silently re-extracted all 12,614 images per seed - which is how a check that
+    should cost minutes comes to cost an hour, and how people stop running it.
+    """
     processed_root.mkdir(parents=True, exist_ok=True)
     model_root.mkdir(parents=True, exist_ok=True)
     report_root.mkdir(parents=True, exist_ok=True)
     feature_names = feature_frame_names()
 
     print("Extracting forensic features ...", flush=True)
-    feature_path = processed_root / "features.npz"
+    # Read and write are deliberately different paths when a cache root is given.
+    # The pixels, and therefore the feature rows, are identical for every seed -
+    # row order is fixed by the loader and was checked, not assumed. But the
+    # ``split`` array saved beside them belongs to the seed that wrote the file,
+    # so sharing the write would leave a cache advertising another run's split.
+    read_path = (feature_cache_root or processed_root) / "features.npz"
+    write_path = processed_root / "features.npz"
     cached_matrix = None if recompute_features else _load_cached_matrix(
-        feature_path, frame, feature_names
+        read_path, frame, feature_names
     )
     if cached_matrix is not None:
-        print(f"  reusing {feature_path.name} ({cached_matrix.shape[0]} rows, "
+        print(f"  reusing {read_path} ({cached_matrix.shape[0]} rows, "
               f"{cached_matrix.shape[1]} features)", flush=True)
         X = cached_matrix
     else:
@@ -361,7 +396,7 @@ def train_and_evaluate(
         )
 
     np.savez_compressed(
-        processed_root / "features.npz",
+        write_path,
         X=X, y=y, split=split,
         tamper_type=frame["tamper_type"].to_numpy(dtype=str),
         sample_id=frame["sample_id"].to_numpy(dtype=str),
@@ -390,7 +425,7 @@ def train_and_evaluate(
         print(f"Fitting {name} ...", flush=True)
         model.fit(X_fit, y_fit)
         validation_probabilities = model.predict_proba(X[val_mask])[:, 1]
-        threshold = _select_threshold(y[val_mask], validation_probabilities)
+        threshold = select_threshold(y[val_mask], validation_probabilities)
         test_probabilities = model.predict_proba(X[test_mask])[:, 1]
         comparison[name] = {
             "validation": _metrics(y[val_mask], validation_probabilities, threshold),
@@ -418,6 +453,15 @@ def train_and_evaluate(
     feature_importances = _feature_importances(
         model, feature_names, X[val_mask], y[val_mask]
     )
+    # Where, not just whether. Tile extraction is the slowest step in the run, so
+    # the subset is capped; the cap is recorded with the result rather than hidden.
+    from localise import evaluate_localisation
+
+    localisation = (
+        evaluate_localisation(model, frame, val_mask, test_mask, seed=seed, limit=int(localise_limit))
+        if localise_limit
+        else {"available": False, "reason": "localisation skipped by request"}
+    )
     metadata_path = processed_root / "dataset_metadata.txt"
     corpus_name = "unknown"
     if metadata_path.exists():
@@ -438,6 +482,10 @@ def train_and_evaluate(
             "validation_instances": int(val_mask.sum()),
             "test_instances": int(test_mask.sum()),
             "feature_count": len(feature_names),
+            # Which feature code produced this evidence. The count alone was not
+            # enough: a group can be registered, counted, and dead at the same
+            # time, and "143 features" read identically either way.
+            "feature_version": FEATURE_VERSION,
             "feature_groups": sorted({name.split("_")[0] for name in feature_names}),
             "selected_model": best_name,
             "models_compared": sorted(comparison),
@@ -448,7 +496,9 @@ def train_and_evaluate(
             },
             "note": (
                 "Model chosen on validation ROC-AUC. Ground-truth masks are stored "
-                "per manipulated image; image-level screening only (no localization metric)."
+                "per manipulated image and scored for region localisation under "
+                "'localisation'; image-level screening and localisation are reported "
+                "separately because they answer different questions."
             ),
         },
         "confidence_intervals": {
@@ -463,6 +513,7 @@ def train_and_evaluate(
         "validation": _metrics(y[val_mask], validation_probabilities, threshold),
         "test": _metrics(y[test_mask], test_probabilities, threshold),
         "per_family": _family_evaluation(model, test_frame, X[test_mask], threshold),
+        "localisation": localisation,
         "roc_curve": {"fpr": fpr, "tpr": tpr, "thresholds": roc_thresholds},
         "pr_curve": {"precision": precision, "recall": recall, "thresholds": pr_thresholds},
         "feature_importances": feature_importances,
@@ -478,6 +529,9 @@ def train_and_evaluate(
         "model": model,
         "model_name": best_name,
         "feature_names": feature_names,
+        # Saved beside the names so a detector can be recognised as stale rather
+        # than silently scored on a feature layout it was not fitted to.
+        "feature_version": FEATURE_VERSION,
         "threshold": threshold,
         "seed": seed,
         "corpus": corpus_name,

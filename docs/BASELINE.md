@@ -72,36 +72,115 @@ AUC 0.9596 / MCC 0.7744.**
 
 ### Where we stand today
 
-Test-set metrics from the current CASIA run. MCC is derived from the stored
-confusion matrix; it is not yet emitted by the pipeline.
+Test-set metrics from the current CASIA run (2026-11-06, feature version
+`2026-11-dct-block-copymove`). All six columns are emitted by the pipeline
+itself — MCC is computed in `_metrics` alongside them, not derived afterwards.
+
+This table and the paper's row are **not** like-for-like: the corpus under these
+numbers is CASIA as distributed, with the format shortcut intact. The like-for-like
+comparison is the modified-CASIA table two paragraphs below.
 
 | | Paper ResNet-CNN | Ours LR | Ours RF | Ours HGB |
 |---|---:|---:|---:|---:|
-| ACC | 0.8851 | 0.7979 | 0.8765 | **0.8786** |
-| P | 0.8123 | 0.7036 | 0.8249 | 0.8162 |
-| R | 0.9415 | 0.8282 | 0.8655 | 0.8868 |
-| F1 | 0.8664 | 0.7609 | 0.8447 | **0.8500** |
-| AUC | 0.9596 | 0.8756 | 0.9416 | **0.9472** |
-| MCC | 0.7744 | 0.5938 | 0.7429 | **0.7501** |
+| ACC | 0.8851 | 0.8021 | 0.8677 | **0.8718** |
+| P | 0.8123 | 0.7105 | 0.7822 | 0.7976 |
+| R | 0.9415 | 0.8269 | 0.9134 | 0.8975 |
+| F1 | 0.8664 | 0.7643 | 0.8428 | **0.8446** |
+| AUC | 0.9596 | 0.8744 | 0.9394 | **0.9430** |
+| MCC | 0.7744 | 0.6005 | 0.7363 | **0.7399** |
+
+The three "ours" columns are the same three models the pipeline fits; HGB is the
+selected one. The previous run of this table read AUC 0.9472 / MCC 0.7501. The
+0.004 AUC difference is the repaired copy-move group: eight columns that used to
+be identically zero now vary, and in a set already dominated by compression
+statistics they dilute the boosting model slightly. It is reported rather than
+undone by deleting the group, because the same eight columns are worth +0.037
+AUC in the forensic-only arm below. See the paired measurement in
+`docs/TRANSFER-FINDING.md`.
 
 We are within a few points on every metric with a handcrafted-feature model and
-no deep network. Two things stop this being a claim we can make yet:
+no deep network. Two things stopped this being a claim we could make:
 
-1. Their CASIA is **modified** (see protocol below) and ours is not, so our 0.9472
-   is still carrying the file-format shortcut they designed out.
-2. Their set is class-balanced and ours is not, so accuracy is not comparable
-   until we balance.
+1. Their CASIA is **modified** — every uncompressed image re-encoded at a random
+   JPEG quality factor — and ours was not, so our 0.9430 carried the file-format
+   shortcut they designed out.
+2. Their set is class-balanced and ours was not, so accuracy was not comparable.
 
-After normalising format ourselves — with a fixed q90 rather than their random
-quality — our AUC fell to 0.868, which is below them. That is the honest gap to
-close.
+Both are now closed by running their protocol rather than arguing about it.
+`src/modified_casia.py` builds the corpus §4.1.3 describes (3,103 conversions,
+quality factors 50–100 drawn per image from a hash, authentic thinned to 5,123,
+10,246 rows, manifest digest in `reports/modified_casia_build.json`) and the
+identical pipeline ran on it under `--arm casia2_mod`:
 
-A fairness caveat that belongs in the report, not in a footnote: we split by
-source scene and they state no scene grouping. If their split was random at the
-file level, CASIA forgeries share source photographs across train and test, so
-their reported numbers are inflated relative to ours in a way that flatters us
-once the shortcut is removed. Say so plainly rather than letting the table imply
-a closer comparison than the protocols allow.
+| | Paper ResNet-CNN | Ours LR | Ours RF | Ours HGB |
+|---|---:|---:|---:|---:|
+| ACC | 0.8851 | 0.7595 | **0.8592** | 0.8232 |
+| P | 0.8123 | 0.7252 | **0.8071** | 0.7751 |
+| R | 0.9415 | 0.7866 | **0.9208** | 0.8792 |
+| F1 | 0.8664 | 0.7547 | **0.8602** | 0.8239 |
+| AUC | 0.9596 | 0.8113 | **0.9211** | 0.8974 |
+| MCC | 0.7744 | 0.5212 | **0.7260** | 0.6530 |
+
+Same six columns, same corpus shape as theirs, 7,100 / 1,562 / 1,584 split, group
+leakage check passes (`groups_in_multiple_splits: 0`). Random forest is the
+selected detector here — on this corpus it beats histogram gradient boosting on
+validation AUC, which is the rule, not a preference.
+
+The gap that remains is small and it is not uniform: precision is within 0.005,
+F1 within 0.006, accuracy within 0.026, while AUC is 0.039 behind and MCC 0.048.
+Read the AUC and MCC columns as the honest distance: their deep two-branch model
+separates the classes more cleanly at the top of the ranking than 143 handcrafted
+statistics do, even though at one threshold the two are nearly indistinguishable.
+
+What is still not the same, and each of these would move a number:
+
+- **Split grouping.** We place whole scenes in one fold; the paper states no
+  grouping. CASIA's scenes are violently uneven — the median scene is a single
+  image, but one scene (`ani00001`) holds 3,814 rows including 3,020 of the 5,123
+  tampered images, 58.9% of the whole positive class. A file-level random split
+  can therefore put an original photograph in train and dozens of splices made
+  from it in test, and on that scene it is not an edge case but the majority of
+  the positives. If they split at file level their numbers are inflated relative
+  to ours, which means this comparison flatters us; the paper does not say, and
+  the honest position is that we cannot tell.
+- **Quality-factor range.** §4.1.3 says "random quality factor" and never gives
+  the range. 50–100 is our choice, it is recorded in `reports/modified_casia_build.json`
+  (mean 74.58), and it is the single most likely source of a disagreement with
+  their numbers that no one will be able to resolve from the text.
+- **Augmentation.** Theirs is horizontal flip, vertical flip and rotation through
+  180°. Ours keeps the flips and drops rotation, because resampling pixels is
+  precisely the evidence a noise and DCT detector is asked to read. Our training
+  half additionally sees six post-processed copies of itself, which is not in
+  their protocol.
+- **Machine.** They report 128 GB RAM and a 24 GB TITAN RTX. This arm ran on a
+  15 GiB, 16-core laptop, and the classical pipeline does not use its GPU at all.
+  That is not a modesty note: it is why the feature model is the part that is
+  reproducible here, and why the deep baseline in `src/deep_detector.py` reports
+  its peak VRAM instead of assuming the reader has the same card.
+
+The parity arm is also the first place the robustness sweep means something new.
+Every condition scores lower on it than on the distributed corpus — the shortcut
+is gone and every image has already been through one JPEG generation — but the
+*drop from clean* is not uniformly worse: a further re-encode at q90 costs the
+parity corpus 0.067 AUC where it costs the distributed corpus 0.110, exactly as
+you would expect once the training set has already seen random-quality
+re-compression. Re-scaling to half resolution behaves oppositely (0.187 against
+0.145). Two caveats on reading these numbers as a comparison: the selected
+detectors differ between the arms (random forest here, gradient boosting there),
+so this is not a controlled A/B, and the clean rows themselves are not equal.
+
+Table 9 itself is ambiguous about its own provenance: the text says every
+architecture was retrained "instead of merely comparing with metric figures
+mentioned in published works", while its footnote says "-" marks scores "not
+mentioned in the research papers", which implies at least the competitor rows are
+quoted from other work.
+
+The earlier fixed-q90 probe (AUC 0.873, 400 test images per class, re-measured
+with the repaired copy-move group; 0.868 under the previous feature version) is
+superseded for this purpose by the arm above, which is the full corpus and their
+protocol rather than a subsample with a hand-picked quality factor. It stays in
+`docs/TRANSFER-FINDING.md` because the q90 probe answers a different question —
+how much of the *shortcut* a single codec state removes.
 
 ### Their own ablation supports our finding
 
@@ -115,9 +194,12 @@ Table 8 of the paper, each branch of their two-branch model trained alone:
 
 Neither branch is strong alone, and the compression branch clearly outperforms
 the spatial branch. This is the same pattern our ablation found: forensic
-residual/copy-move evidence alone supports 0.671, compression-shaped features
-alone support 0.903. Cite this — it means our analysis reproduces a published
-result rather than being a curious observation of our own.
+residual/noise/copy-move evidence alone supports 0.698, compression-shaped
+features alone support 0.887. Cite this — it means our analysis reproduces a
+published result rather than being a curious observation of our own. Both numbers
+are from the current feature version; the 0.671 this document used to quote was
+measured while the copy-move group was silently returning zeros, which is why
+the spatial branch looked weaker than it is.
 
 ## Shared protocol — all four members must follow this
 
@@ -128,29 +210,43 @@ specified so the four models are comparable to each other and to the paper.
 
 - Source: CASIA v2.0, `data/real/casia2/` — 7,491 authentic (`Au/`), 5,123
   tampered (`Tp/`), 5,123 ground-truth masks (`Gt/`).
-- **Format normalisation, matching the paper:** every tampered image stored
-  uncompressed (TIFF/BMP — 3,059 of 5,123 are TIFF) is re-encoded as JPEG at a
-  **random quality factor**. Their stated reason is that their framework uses
-  compression artefacts, so leaving images uncompressed makes the file format,
-  not the forgery, the discriminative feature.
-  - Use a fixed random seed so all four members get byte-identical datasets.
+- **Format normalisation, matching the paper — built, in `src/modified_casia.py`:**
+  every uncompressed image is re-encoded as JPEG at a **random quality factor**,
+  and the authentic class is thinned to 5,123. Measured on our archive that is
+  3,059 tampered TIFFs plus 44 of the 54 authentic BMPs — 3,103 conversions —
+  giving 5,123/5,123 and **10,246 rows**, 4,781 scenes.
+  - Both classes are converted. The paper's sentence reads as if only tampered
+    images are touched, and `--tampered-only` reproduces that literal reading,
+    but converting only the tampered side would make "this file is a BMP" a
+    pure authentic-class cue. The arm exists to remove cues, not relocate them.
+  - The quality factor is drawn from a hash of `seed:path`, not from a shuffle
+    over the list, so adding or removing one image cannot reshuffle everyone
+    else's draw. Range 50–100 (mean 74.58); the paper never states a range.
   - A fixed quality for everything is *not* equivalent: it leaves originally
     JPEG images double-compressed and originally TIFF images single-compressed,
     which is still a class-correlated cue. Randomising quality is what removes
     it.
-- **Class balance:** subsample authentic to 5,123, matching the paper. Report
-  class counts in every results table.
-- Expected total: **10,246 images**.
+  - The corpus is 9 GB and cannot be committed, so the shared artifact is the
+    recipe plus its digest: `reports/modified_casia_build.json` records the
+    manifest SHA-256, and `.venv/bin/python src/modified_casia.py verify` re-checks
+    dimensions and that digest on any machine that has the CASIA archive.
+  - Every converted row carries the `source_id` and `tamper_type` of the image it
+    came from. Re-deriving them from the new path would break CASIA's scene
+    linkage and, with it, the leakage rule below — silently, and only on this arm.
 
 ### Splits
 
 - Grouped by scene, never by file. CASIA names each forgery after the
   photographs it was pasted from, so `Au_ani_00018.jpg` and every
   `Tp_*_ani00018_*` are one scene; the linkage is transitive.
-  12,614 images resolve to 6,523 scenes; the balanced set will be fewer.
-- 70 / 15 / 15 train / validation / test, assigned by whole scene.
-- Splits are **frozen**. One member produces `benchmark.csv` and the metadata
-  sidecar; the other three consume it unchanged. Nobody re-splits.
+  12,614 images resolve to 6,523 scenes; the balanced set has 10,246 rows in
+  4,781 scenes.
+- 70 / 15 / 15 train / validation / test, assigned by whole scene. On the
+  modified corpus that is 7,100 / 1,562 / 1,584 over 4,781 groups; on CASIA as
+  distributed, 8,739 / 1,940 / 1,935 over 6,523.
+- Splits are **frozen**. One command produces the benchmark CSV and the metadata
+  sidecar; every other run consumes it unchanged, and `--arm <name>` keeps a
+  side experiment's artifacts out of the cited ones instead of overwriting them.
 - A run is invalid if the group-leakage check is nonzero.
 
 ### Metrics
@@ -159,10 +255,11 @@ Report all six, in this order, to match the paper's tables:
 
 `ACC  P  R  F1  AUC  MCC`
 
-`matthews_corrcoef` is the only one not currently emitted by the pipeline and
-needs adding. Its value for the current model is 0.7501, computed from the stored
-confusion matrix as a stopgap. Threshold is chosen on validation only, never on
-test. Report the threshold used.
+`matthews_corrcoef` is emitted by the pipeline itself — it is computed in
+`_metrics` in `src/train.py` beside the other five, so no metric in this table
+has a different provenance from any other. Its value for the current model is
+0.7399. Threshold is chosen on validation only, never on test. Report the
+threshold used.
 
 ### Also reported, because it is our differentiator
 
@@ -205,11 +302,27 @@ required to compete here.
 
 ## What a journal reviewer would still ask for
 
-Beating this baseline is enough for the course, and enough for the extra marks.
-It is not by itself enough to submit a paper. Reviewers in this field expect a
-second dataset (CoMoFoD, COVERAGE, or PROV+) to show the result is not CASIA-
-specific, and localisation metrics (IoU or Dice) rather than image-level
-accuracy alone. We already load and render the ground-truth masks, so Dice and
-IoU are the cheaper of the two gaps; a second dataset is the expensive one.
-Decide which of those the group is aiming at before anyone starts a long
-training run.
+Both gaps this document used to name are now closed, and closing them produced
+the project's most important result:
+
+- **A second dataset.** CoMoFoD small v2 is loaded, audited against its own
+  published composition, and scored zero-shot. The detector is at chance there
+  (ROC-AUC 0.506, MCC −0.003), and the mechanism is a post-processing confound
+  rather than a labelling bug — see
+  [docs/TRANSFER-FINDING.md](TRANSFER-FINDING.md).
+- **Localisation metrics.** Dice, IoU, hit rate, pixel accuracy and the
+  falsely-flagged area are reported for tile rescoring and for ELA, in-domain and
+  per external corpus: in-domain tiled Dice 0.131, ELA 0.156, transfer Dice
+  0.051. Weak numbers, measured honestly.
+
+What reviewers would still ask for, in the order that costs us most:
+
+1. The paper's **modified-CASIA protocol** (random quality factor per image,
+   balanced 5,123/5,123), without which the comparison stays approximate.
+2. **More external corpora** — one external dataset is an anecdote, and the base
+   paper reports one corpus too, which is a gap in the literature rather than a
+   flaw specific to us. Columbia and COVERAGE are blocked on downloads that need
+   a human browser session.
+3. **A deep baseline**, and a segmentation network that predicts the region
+   instead of rescoring crops with a whole-image classifier.
+4. **Multi-seed variance.** Everything here is seed 42.

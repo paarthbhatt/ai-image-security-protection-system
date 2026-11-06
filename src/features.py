@@ -26,9 +26,11 @@ trivially gamed by a brightness edit). Groups:
     recompression and grid misalignment.
 
 ``copymove``
-    Self-matching keypoint structure (SIFT/ORB + ratio test + offset clustering),
-    the classical copy-move detector. Unlike the other groups this is structural:
-    it counts evidence that a region repeats itself.
+    Block-level self-similarity with translation-offset clustering (Webswale &
+    Shuller 2007), the classical copy-move detector. Blocks are compared in the
+    low-frequency DCT domain rather than bit-exactly, because a re-saved paste is
+    similar but not identical. Unlike the other groups this is structural: it
+    counts evidence that a region of the image repeats itself elsewhere.
 
 Every group is size-normalised so the vector length never depends on input
 resolution.
@@ -51,7 +53,7 @@ _NAMES_CACHE: list[str] | None = None
 # Bump whenever the values produced by extract_features change for the same
 # pixels. Cached matrices carry this tag, so tuning a detector cannot silently
 # reuse rows computed by the previous one.
-FEATURE_VERSION = "2024-05-srm-orb-singlescale-bincount"
+FEATURE_VERSION = "2026-11-dct-block-copymove"
 
 
 def _register(name: str) -> str:
@@ -281,91 +283,150 @@ def _jpeg_features(gray: np.ndarray) -> list[float]:
 
 
 # --- Copy-move structural evidence ----------------------------------------
+#
+# This group used to self-match ORB keypoints, and it never once worked. The code
+# asked ``match_descriptors(descriptors, descriptors, cross_check=True)``, whose
+# best match for keypoint *i* is always keypoint *i* itself at distance zero; the
+# next line filtered the identity pairs out, so every image raised "no self
+# matches", and the surrounding ``except Exception`` turned that into eight zeros.
+# The group was therefore silent on every corpus and in every committed result,
+# while still looking like a legitimate "no evidence here" answer.
+#
+# What replaces it is the classical block matcher (Webswale & Shuller, 2007),
+# chosen on measurement rather than preference. On 50 CASIA copy-move forgeries
+# against 50 authentic images (.work/sweep_copymove_floor.py): cm_offset_entropy
+# reaches AUC 0.749 and cm_matched_pairs 0.722, where the repaired ORB path scored
+# 0.48-0.55 (chance) and bit-exact block equality found *zero* matches. Exact
+# equality fails for a reason worth knowing: a paste that does not land on the
+# JPEG 8x8 grid is requantised on re-save, so copied pixels are similar but never
+# identical. Low-frequency DCT matching survives that.
+#
+# The limit of the method belongs in the report, not a footnote: offset clustering
+# detects *translated* copies. CoMoFoD's own readme.txt states that the copied
+# region is transformed in 160 of its 200 scenes (ROTATION, SCALING, DISTORTION,
+# COMBINATION), so this group is structurally blind to four fifths of that corpus.
 
-# Keypoints are searched at a fixed working scale. A copy-move pair shares a
-# translation, not a scale, so a downscaled image yields the same evidence while
-# costing a fraction as much: FAST corner detection on a 768 px photograph takes
-# 3.7 s at full resolution versus 0.1 s here.
-CM_MAX_SIDE = 256
+CM_BLOCK = 16             # block edge, in pixels
+CM_STRIDE = 8             # overlapping, so a small paste still yields several blocks
+CM_TEXTURE_FLOOR = 25.0   # grey-level std; flatter blocks match anything (measured)
+CM_SIMILARITY = 0.98      # cosine similarity of unit-normed low-frequency DCT vectors
+CM_MIN_SEPARATION = 4     # in blocks: a copy must be displaced, not neighbouring texture
+CM_OFFSET_BUCKET = 1.0    # translation clustering resolution, in blocks
+CM_CANDIDATE_WINDOW = 96  # neighbours compared per descriptor after the projection sort
+CM_MAX_PAIRS = 200_000    # past this the matches are repetitive texture, not a forgery
+
+CM_STATISTICS = (
+    "blocks",
+    "matched_pairs",
+    "pair_ratio",
+    "cluster_max",
+    "cluster_groups",
+    "cluster_ratio",
+    "offset_entropy",
+    "peak_ratio",
+)
 
 
-def _copy_move_working_image(gray_uint8: np.ndarray) -> np.ndarray:
-    """Downscale so keypoint search is resolution-independent in cost and behaviour."""
-    longest = max(gray_uint8.shape)
-    if longest <= CM_MAX_SIDE:
-        return gray_uint8
+def _cm_blocks(gray: np.ndarray) -> tuple[np.ndarray, np.ndarray] | None:
+    """Overlapping texture-bearing blocks and the grid coordinates they came from."""
+    rows = (gray.shape[0] - CM_BLOCK) // CM_STRIDE + 1
+    cols = (gray.shape[1] - CM_BLOCK) // CM_STRIDE + 1
+    if rows < 3 or cols < 3:
+        return None
 
-    from skimage.transform import resize
+    strides = (gray.strides[0] * CM_STRIDE, gray.strides[1] * CM_STRIDE, *gray.strides)
+    windows = np.lib.stride_tricks.as_strided(
+        gray, shape=(rows, cols, CM_BLOCK, CM_BLOCK), strides=strides
+    )
+    blocks = np.asarray(windows, dtype=np.float64).reshape(rows * cols, CM_BLOCK * CM_BLOCK)
+    coordinates = np.stack(
+        (np.repeat(np.arange(rows), cols), np.tile(np.arange(cols), rows)), axis=1
+    )
 
-    scale = CM_MAX_SIDE / longest
-    height = max(24, round(gray_uint8.shape[0] * scale))
-    width = max(24, round(gray_uint8.shape[1] * scale))
-    working = resize(gray_uint8, (height, width), preserve_range=True, anti_aliasing=True)
-    return working.astype(np.uint8)
+    keep = blocks.std(axis=1) >= CM_TEXTURE_FLOOR
+    if int(keep.sum()) < 8:
+        return None
+    return blocks[keep], coordinates[keep]
+
+
+def _cm_descriptors(blocks: np.ndarray) -> np.ndarray:
+    """Unit-normed low-frequency DCT coefficients, DC term dropped.
+
+    Dropping DC is what lets a bright paste match a dark host: the remaining
+    fifteen coefficients describe the patch's structure, not its level.
+    """
+    from scipy.fft import dctn
+
+    coefficients = dctn(
+        blocks.reshape(-1, CM_BLOCK, CM_BLOCK), type=2, norm="ortho", axes=(1, 2)
+    )
+    low = coefficients[:, :4, :4].reshape(len(blocks), 16)[:, 1:]
+    norms = np.linalg.norm(low, axis=1, keepdims=True)
+    return low / np.where(norms == 0.0, 1.0, norms)
+
+
+def _cm_candidate_pairs(descriptors: np.ndarray) -> np.ndarray:
+    """Near-duplicate block pairs, blocked by a projection sort instead of O(n^2).
+
+    Similar descriptors land close together once sorted by any fixed direction, so
+    comparing each block with its next ``CM_CANDIDATE_WINDOW`` neighbours finds the
+    pairs that matter at a fraction of the all-pairs cost -- which is the
+    difference between a feature that can run over 12,614 images and one that
+    cannot.
+    """
+    direction = descriptors.mean(axis=0)
+    direction /= max(1e-9, float(np.linalg.norm(direction)))
+    order = np.argsort(descriptors @ direction)
+    ordered = descriptors[order]
+
+    collected: list[np.ndarray] = []
+    total = 0
+    for offset in range(1, CM_CANDIDATE_WINDOW):
+        scores = (ordered[:-offset] * ordered[offset:]).sum(axis=1)
+        hits = np.flatnonzero(scores >= CM_SIMILARITY)
+        if hits.size == 0:
+            continue
+        collected.append(np.stack([order[hits], order[hits + offset]], axis=1))
+        total += int(hits.size)
+        if total > CM_MAX_PAIRS:
+            break
+    if not collected:
+        return np.zeros((0, 2), dtype=np.int64)
+    return np.unique(np.concatenate(collected, axis=0), axis=0)
 
 
 def _copymove_features(gray_uint8: np.ndarray) -> list[float]:
-    """Self-matching keypoints with offset clustering (classical CMFD evidence).
+    """Translation-consistent duplicate blocks: the classical copy-move signature.
 
-    Returns zeros when the image is too small or too featureless to support the
-    detector, which is the honest answer rather than a fabricated score.
+    Zeros mean "no matching blocks survived the separation filter", which is a
+    measurement. There is deliberately no blanket ``except`` here, because that
+    is exactly the shape of the defect this function replaces.
     """
-    empty = [0.0] * 8
-    if min(gray_uint8.shape) < 24:
-        for stat in ("keypoints", "self_matches", "cluster_max", "cluster_count",
-                     "cluster_ratio", "offset_entropy", "peak_ratio", "match_density"):
-            _register(f"cm_{stat}")
-        return empty
+    found = _cm_blocks(gray_uint8.astype(np.float64))
+    if found is None:
+        return [0.0] * len(CM_STATISTICS)
+    blocks, coordinates = found
 
-    try:
-        from skimage.feature import ORB, match_descriptors
+    values = [float(len(blocks))] + [0.0] * (len(CM_STATISTICS) - 1)
+    pairs = _cm_candidate_pairs(_cm_descriptors(blocks))
+    if len(pairs) > 0:
+        offsets = coordinates[pairs[:, 1]] - coordinates[pairs[:, 0]]
+        displaced = (np.abs(offsets[:, 0]) + np.abs(offsets[:, 1])) >= CM_MIN_SEPARATION
+        pairs, offsets = pairs[displaced], offsets[displaced]
+        if len(pairs) > 0:
+            buckets = np.rint(offsets / CM_OFFSET_BUCKET).astype(np.int32)
+            _, counts = np.unique(buckets, axis=0, return_counts=True)
+            ordered_counts = np.sort(counts)[::-1]
+            probabilities = counts / counts.sum()
+            values[1] = float(len(pairs))
+            values[2] = float(len(pairs) / len(blocks))
+            values[3] = float(ordered_counts[0])
+            values[4] = float((counts >= 3).sum())
+            values[5] = float(ordered_counts[0] / len(pairs))
+            values[6] = float(-(probabilities * np.log2(probabilities + 1e-12)).sum())
+            values[7] = float(ordered_counts[0] / len(counts))
 
-        detector = ORB(n_keypoints=256, fast_threshold=0.05, n_scales=1)
-        detector.detect_and_extract(
-            _copy_move_working_image(gray_uint8).astype(np.float32) / 255.0
-        )
-        keypoints = detector.keypoints
-        descriptors = detector.descriptors
-        if descriptors is None or len(descriptors) < 8:
-            raise ValueError("too few keypoints")
-
-        matches = match_descriptors(descriptors, descriptors, cross_check=True)
-        matches = matches[matches[:, 0] != matches[:, 1]]
-        if len(matches) == 0:
-            raise ValueError("no self matches")
-
-        offsets = keypoints[matches[:, 1]] - keypoints[matches[:, 0]]
-        magnitudes = np.linalg.norm(offsets, axis=1)
-        significant = offsets[magnitudes > 2.0]
-        if len(significant) == 0:
-            raise ValueError("no significant offsets")
-
-        # Two regions are copy-move if many pairs share the same translation.
-        buckets = np.rint(significant / 4.0).astype(np.int32)
-        _, inverse, counts = np.unique(
-            buckets, axis=0, return_inverse=True, return_counts=True
-        )
-        ordered = np.sort(counts)[::-1]
-        cluster_max = int(ordered[0])
-        cluster_count = int((counts >= 3).sum())
-        probabilities = counts / counts.sum()
-        offset_entropy = float(-(probabilities * np.log2(probabilities + 1e-12)).sum())
-        match_density = float(len(significant) / max(1, len(keypoints)))
-        del inverse
-        values = [
-            float(len(keypoints)),
-            float(len(significant)),
-            float(cluster_max),
-            float(cluster_count),
-            float(cluster_max / max(1, len(significant))),
-            offset_entropy,
-            float(ordered[0] / max(1, len(ordered))),
-            match_density,
-        ]
-    except Exception:  # noqa: BLE001 - feature extraction must never abort a run
-        values = empty
-    for stat in ("keypoints", "self_matches", "cluster_max", "cluster_count",
-                 "cluster_ratio", "offset_entropy", "peak_ratio", "match_density"):
+    for stat in CM_STATISTICS:
         _register(f"cm_{stat}")
     return values
 

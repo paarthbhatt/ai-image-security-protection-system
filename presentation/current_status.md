@@ -14,8 +14,11 @@ visual evidence.
 - **Manipulations:** copy_move, splicing.
 - **Model:** hist_gradient_boosting over 143
   forensic features (selected on validation ROC-AUC from hist_gradient_boosting, logistic_regression, random_forest).
-- **Held-out test:** ROC-AUC **0.947** (95% CI 0.938–0.956),
-  PR-AUC **0.901**, balanced accuracy **0.880**, F1 **0.850**.
+- **Held-out test:** ROC-AUC **0.943** (95% CI 0.933–0.953),
+  PR-AUC **0.891**, balanced accuracy **0.877**, F1 **0.845**, MCC **0.740**.
+- **Region localisation** (240 images per split, 128 px tiles at stride 64): learned tiles give Dice **0.131**, IoU **0.082**, hit rate **0.883**; ELA tiles give Dice **0.156**, IoU **0.103**. On authentic images the tiled predictor falsely flags **0.078** of the area. Weak region scores are a result, not a rounding error: a classifier fitted on whole photographs loses context a 128-pixel crop cannot keep.
+- **Zero-shot transfer (never trained, never tuned on):** **comofod** bal-acc 0.499, ROC-AUC 0.506, MCC -0.003 (200 unseen scenes). The decision threshold 0.36 and the region thresholds are carried over from the training corpus unchanged.
+  - **By tamper geometry** (each family scored against that corpus's authentic images): comofod — combination 0.49, distortion 0.55, rotation 0.47, scaling 0.53, translation 0.50.
 - **Leakage check:** no source group appears in two splits — **True**.
 - **Training augmentation:** 26,220 extra rows from
   jpeg_q90, jpeg_q70, jpeg_q50, jpeg_q30, noise, blur (never from test data).
@@ -35,10 +38,8 @@ visual evidence.
 4. **Evidence:** show `figures/system_diagram.png`, then
    `figures/model_comparison.png`, `figures/confusion_matrix.png`, and the
    ROC/PR curves.
-5. **Honesty:** this pilot uses controlled synthetic edits on small images; it is
-   a working baseline, not proof of authenticity.
-6. **Next step:** external datasets (CASIA v2.0, CoMoFoD small, and an untouched
-   external test set), a CNN comparison, and robustness/calibration analysis.
+5. **Honesty:** the corpus is real tampered photographs and the splits are scene-grouped, so these numbers characterise this dataset rather than prove a universal detector; region localisation is reported even where it is weak.
+6. **Next step:** zero-shot transfer to Columbia/COVERAGE and CoMoFoD, a fine-tuned CNN backbone, and a segmentation network that predicts the tampered region instead of describing it.
 
 ## 4. Questions the supervisor may ask
 
@@ -53,6 +54,11 @@ one split.
 **Does hashing detect a visual edit?** Only if a trusted original hash exists and
 the bytes changed. It complements—not replaces—the AI detector.
 
+**How do you know the model localises rather than just detects?** Image-level
+accuracy cannot tell those apart, so the tampered region is scored separately
+against the ground-truth masks (Dice, IoU, hit rate, and false-positive area on
+authentic images). Region thresholds are chosen on the validation split only.
+
 **How many datasets are needed?** One public dataset is sufficient for a pilot;
 the final study should use CASIA v2.0 + CoMoFoD small for development and CASIA
 v1.0 or COVERAGE as an untouched external test. Target 10,000–20,000 instances
@@ -65,6 +71,7 @@ from at least 300 independent source groups.
 - `figures/sample_pairs.png` — authentic vs. manipulated examples.
 - `figures/model_comparison.png` — baseline vs. trained detector.
 - `figures/roc_pr_curves.png` — threshold-independent evidence.
+- `figures/localisation.png` — where the tampering is, not just whether.
 - `figures/robustness.png` — post-processing degradation.
 - `reports/results.json` — machine-readable metrics.
 - `docs_research_plan.md` — research questions, threat model, data protocol.

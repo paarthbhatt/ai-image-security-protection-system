@@ -298,6 +298,43 @@ def _is_comofod_mask(path: Path) -> bool:
     return any(path.with_name(f"{base}_F{suffix}").is_file() for suffix in IMAGE_SUFFIXES)
 
 
+# CoMoFoD small v2 puts 52 files per scene in one flat directory:
+#
+#   <id>_B          the base photograph
+#   <id>_O          that photograph, and <id>_O_<CODE> its post-processed copies
+#   <id>_F          a copy-move forgery, and <id>_F_<CODE> its post-processed copies
+#   <id>_M          the single mask, reused for every forgery variant because the
+#                   codes (JPEG, blur, noise, colour) change pixels, never geometry
+#
+# Nothing in the folder name says which class a file belongs to, so the role has
+# to come from the filename. Reading only a trailing ``_F`` -- the old behaviour
+# -- labels all 24 post-processed forgeries per scene as authentic: 4,800 of the
+# 5,000 forgeries in this corpus, silently, and the class balance looks plausible
+# enough that no check complains.
+COMOFOD_STEM = re.compile(r"^(?P<scene>\d+)_(?P<role>[BOFM])(?:_.*)?$", re.IGNORECASE)
+
+
+def _comofod_parts(stem: str) -> tuple[str, str] | None:
+    """Scene id and role letter for one CoMoFoD-style filename, else None."""
+    match = COMOFOD_STEM.match(stem)
+    if match is None:
+        return None
+    return match.group("scene"), match.group("role").upper()
+
+
+def _looks_like_comofod(images: list[Path]) -> bool:
+    """Whether a tree is named in the CoMoFoD convention, decided from evidence.
+
+    Thresholded on the whole tree rather than a dataset name, so the rule cannot
+    misfire on some other corpus that happens to contain ``12_F.png``, and cannot
+    be skipped because somebody typed the wrong ``--real-dataset`` label.
+    """
+    if len(images) < 50:
+        return False
+    matches = sum(1 for path in images if _comofod_parts(path.stem) is not None)
+    return matches / len(images) > 0.8
+
+
 def _is_mask_path(path: Path) -> bool:
     if any(_hint_match(part, MASK_HINTS) for part in path.parts[:-1]):
         return True
@@ -305,6 +342,60 @@ def _is_mask_path(path: Path) -> bool:
         return True
     stem = _normalise(path.stem)
     return stem.endswith(("gt", "mask")) or "groundtruth" in stem
+
+
+# CoMoFoD ships a readme.txt that groups its scenes by what was done to the
+# copied region: five sections of forty scenes, an uppercase header line, then
+# one line per scene. That is the corpus stating its own construction, and it
+# decides the tamper type far better than a filename can -- a detector built on
+# translation offsets can only ever address the first of those five sections,
+# so scoring the corpus without this split hides which forgeries are missed and
+# why.
+COMOFOD_SECTION = re.compile(r"^(TRANSLATION|ROTATION|SCALING|DISTORTION|COMBINATION)$")
+COMOFOD_README_LINE = re.compile(r"^(?P<scene>\d{3})\b")
+COMOFOD_FAMILY_LABELS = {
+    "translation": "copy_move_translation",
+    "rotation": "copy_move_rotation",
+    "scaling": "copy_move_scaling",
+    "distortion": "copy_move_distortion",
+    "combination": "copy_move_combination",
+}
+
+
+def _comofod_families(images: list[Path]) -> dict[str, str]:
+    """Scene id -> documented transformation family, read from the corpus itself.
+
+    Empty when no readme is present, which leaves the caller to fall back to the
+    generic ``copy_move`` label rather than inventing a taxonomy.
+    """
+    readme: Path | None = None
+    for directory in dict.fromkeys(path.parent for path in images):
+        for candidate in (directory / "readme.txt", directory / "README.txt"):
+            if candidate.is_file():
+                readme = candidate
+                break
+        if readme is not None:
+            break
+    if readme is None:
+        return {}
+
+    try:
+        lines = readme.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return {}
+
+    families: dict[str, str] = {}
+    current: str | None = None
+    for line in lines:
+        stripped = line.strip()
+        header = COMOFOD_SECTION.match(stripped.upper())
+        if header is not None:
+            current = header.group(1).lower()
+            continue
+        scene = COMOFOD_README_LINE.match(stripped)
+        if scene is not None and current is not None:
+            families.setdefault(scene.group("scene"), COMOFOD_FAMILY_LABELS[current])
+    return families
 
 
 def _classify_folder(path: Path) -> str | None:
@@ -326,6 +417,12 @@ def _tamper_type_from_name(path: Path) -> str:
     if "copy" in text and "move" in text:
         return "copy_move"
     if "splic" in text or "splice" in text:
+        return "splicing"
+    # The Columbia evaluation set keeps both classes under generic folder names
+    # (``AuthenticImages`` / ``TamperedImages``), so nothing in the path says how
+    # it was forged. The corpus itself does: every tampered image there is a
+    # splicing, which is the dataset's published construction.
+    if "columbia" in text:
         return "splicing"
     if "remov" in text or "inpaint" in text:
         return "removal"
@@ -378,6 +475,16 @@ def find_mask_for(image: Path, dataset_root: Path) -> Path | None:
         found = index.get(stem)
         if found is not None:
             return found
+
+    # CoMoFoD small: one mask per scene named <id>_M, shared by the base forgery
+    # and every post-processed copy of it. The masks sit in the same flat
+    # directory as the images, so there is no mask folder for the index to find.
+    parts = _comofod_parts(image.stem)
+    if parts is not None and parts[1] == "F":
+        for suffix in IMAGE_SUFFIXES:
+            candidate = image.with_name(f"{parts[0]}_M{suffix}")
+            if candidate.is_file():
+                return candidate.resolve()
 
     # CoMoFoD keeps the mask beside the forged image as <scene>_M.png
     if image.stem.upper().endswith("_F"):
@@ -491,6 +598,17 @@ def load_real_forgery_dataset(
             "sharing source photographs"
         )
 
+    comofod_like = _looks_like_comofod(images)
+    comofod_families: dict[str, str] = {}
+    if comofod_like:
+        print(f"  {name}: filenames follow the CoMoFoD <id>_<B|O|F>[_<code>] convention")
+        comofod_families = _comofod_families(images)
+        if comofod_families:
+            counted = pd.Series(comofod_families.values()).value_counts().to_dict()
+            print(f"  {name}: readme.txt documents {len(comofod_families)} scenes by geometry {counted}")
+        else:
+            print(f"  {name}: no readme.txt found, tamper type stays generic copy_move")
+
     rows: list[dict[str, object]] = []
     for path in images:
         role = _classify_folder(path.relative_to(root).parent)
@@ -502,6 +620,19 @@ def load_real_forgery_dataset(
                 tamper_type = _casia_tamper_type(path.stem) or tamper_type
         elif role == "mask":
             continue
+        elif comofod_like:
+            parts = _comofod_parts(path.stem)
+            if parts is None or parts[1] == "M":
+                continue
+            if parts[1] == "F":
+                # Every forgery here is a copy-move of part of the same image;
+                # the readme says which geometric transformation the copied
+                # region carries, and that is what separates detectable from
+                # undetectable by a translation-offset detector.
+                label = 1
+                tamper_type = comofod_families.get(parts[0], "copy_move")
+            else:
+                label, tamper_type = 0, "authentic"
         else:
             # CoMoFoD convention: <scene>_F (forged) / <scene>_M (mask) / <scene> (original)
             stem = path.stem
@@ -521,7 +652,7 @@ def load_real_forgery_dataset(
                 "source_id": (
                     f"{name}:scene:{linked[path]}"
                     if linked is not None
-                    else f"{name}:{_scene_key(path, root)}"
+                    else f"{name}:{_scene_key(path, root, comofod=comofod_like)}"
                 ),
                 "dataset": name,
                 "label": label,
@@ -555,9 +686,14 @@ def load_real_forgery_dataset(
     return frame.reset_index(drop=True)
 
 
-def _scene_key(path: Path, root: Path) -> str:
+def _scene_key(path: Path, root: Path, comofod: bool = False) -> str:
     """Group key: variants of one scene collapse to a single id."""
     stem = path.stem
+    if comofod:
+        parts = _comofod_parts(stem)
+        if parts is not None:
+            # 001_B, 001_O_JC5 and 001_F_JC5 are one photograph, so one scene.
+            return f"{path.parent.relative_to(root).as_posix()}/comofod_{parts[0]}"
     stem = re.sub(r"(_F|_M|_gt|_mask|-gt|_gt\d*)$", "", stem, flags=re.IGNORECASE)
     return f"{path.parent.relative_to(root).as_posix()}/{stem}"
 
@@ -731,9 +867,16 @@ def assign_grouped_splits(
 
 
 def available_real_datasets() -> dict[str, str]:
-    """Dataset name -> expected local directory, for CLI discovery."""
+    """Dataset name -> expected local directory, for CLI discovery.
+
+    ``casia2_mod`` is not downloaded: it is derived from the CASIA v2.0 archive
+    by ``python src/modified_casia.py build``, which removes the file-format cue
+    the public packaging leaves behind (see the base paper's section 4.1.3).
+    """
     return {
         "casia2": "data/real/casia2",
+        "casia2_mod": "data/real/casia2_mod",
         "comofod": "data/real/comofod",
         "coverage": "data/real/coverage",
+        "columbia": "data/real/columbia",
     }
