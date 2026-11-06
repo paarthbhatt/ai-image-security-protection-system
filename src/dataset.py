@@ -27,6 +27,7 @@ from PIL import Image, ImageEnhance, ImageFilter
 from sources import (
     Corpus,
     DatasetUnavailable,
+    GROUPING_VERSION,
     assign_grouped_splits,
     content_fingerprint,
     load_cifar10,
@@ -285,6 +286,7 @@ def _cache_matches(
         "source_images": str(source_images),
         "seed": str(seed),
         "manipulation_version": MANIPULATION_VERSION,
+        "grouping_version": GROUPING_VERSION,
         "rows": str(len(cached)),
     }
     if any(fields.get(key) != value for key, value in expected.items()):
@@ -399,6 +401,7 @@ def build_benchmark(
         f"seed={seed}\n"
         f"rows={len(frame)}\n"
         f"manipulation_version={MANIPULATION_VERSION}\n"
+        f"grouping_version={GROUPING_VERSION}\n"
         f"content_digest={_content_fingerprint(frame)}\n"
         f"families={','.join(families)}\n"
         "split=train/validation/test grouped by source_id before manipulation\n"

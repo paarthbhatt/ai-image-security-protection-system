@@ -31,6 +31,16 @@ from visualize import generate_figures, write_presentation_artifacts
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
+# Human-readable corpus names for the benchmarks that can be loaded from disk. The
+# dashboard and results.json read this from the metadata sidecar, which the
+# synthetic builder writes but a real download does not, so without it every real
+# run reports its corpus as "unknown".
+REAL_CORPUS_LABELS = {
+    "casia2": "CASIA v2.0 (real forgeries)",
+    "comofod": "CoMoFoD small (real copy-move)",
+    "coverage": "COVERAGE (real copy-move)",
+}
+
 
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
@@ -46,6 +56,9 @@ def parse_args() -> argparse.Namespace:
                              "(e.g. casia2, comofod, coverage). Skips synthesis entirely.")
     parser.add_argument("--real-root", default="data/real",
                         help="Directory holding manually downloaded real datasets.")
+    parser.add_argument("--max-images", type=int, default=None,
+                        help="Cap the real benchmark to roughly this many images. For smoke "
+                             "tests only: a capped run answers 'does it work', not 'how good is it'.")
     parser.add_argument("--families", default=",".join(MANIPULATION_FAMILIES),
                         help="Comma-separated manipulation families to synthesise.")
     parser.add_argument("--seeds", default="42",
@@ -67,10 +80,18 @@ def parse_args() -> argparse.Namespace:
 
 
 def augmentation_conditions(args: argparse.Namespace) -> tuple[str, ...]:
-    """Conditions used to harden the training set (never derived from test data)."""
+    """Conditions used to harden the training set (never derived from test data).
+
+    ``jpeg_q90`` and ``jpeg_q50`` are here because a measured sweep on CASIA
+    showed q90 was the *worst* condition, not the mildest: ROC-AUC 0.65 against
+    0.81 at q70. The old list covered q70, q30, noise and blur, so q90 sat in a
+    blind spot between two trained qualities and the detector had never seen a
+    single-compression copy of anything. Cheap to fix, and visible in the
+    robustness figure rather than hidden.
+    """
     if args.no_augment:
         return ()
-    return ("jpeg_q70", "jpeg_q30", "noise", "blur")
+    return ("jpeg_q90", "jpeg_q70", "jpeg_q50", "jpeg_q30", "noise", "blur")
 
 
 def build_frame(args: argparse.Namespace, seed: int, processed_root: Path | None = None):
@@ -84,9 +105,21 @@ def build_frame(args: argparse.Namespace, seed: int, processed_root: Path | None
             root=root,
             mask_root=root,
             seed=seed,
+            max_images=args.max_images,
         )
         store_relative(frame, PROJECT_ROOT).to_csv(
             processed_root / f"benchmark_{args.real_dataset}.csv", index=False
+        )
+        forged = frame.loc[frame["label"] == 1]
+        (processed_root / "dataset_metadata.txt").write_text(
+            f"corpus={REAL_CORPUS_LABELS.get(args.real_dataset, args.real_dataset)}\n"
+            f"dataset_key={args.real_dataset}\n"
+            f"rows={len(frame)}\n"
+            f"scenes={frame['source_id'].nunique()}\n"
+            f"masks_available={int((forged['mask_path'] != '').sum())}/{len(forged)}\n"
+            "benchmark_kind=real\n"
+            "grouping=linked by shared source photograph, class-aware split\n",
+            encoding="utf-8",
         )
         return frame
 
@@ -138,6 +171,12 @@ def main() -> None:
 
     if len(seeds) > 1:
         results["multi_seed"] = _run_extra_seeds(args, seeds[1:], model_root, report_root)
+
+    # The dashboard wording depends on whether the corpus contains real forgeries
+    # or edits this project generated. Getting that wrong would let a synthetic
+    # pilot read as real-world evidence.
+    results["experiment"]["benchmark_kind"] = "real" if args.real_dataset else "synthetic"
+    results["experiment"]["benchmark_source"] = args.real_dataset or args.dataset
 
     first_test_path = frame[frame["split"] == "test"].iloc[0]["image_path"]
     protection = run_protection_checks(

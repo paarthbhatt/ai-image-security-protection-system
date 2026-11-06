@@ -1,10 +1,7 @@
-corpus=CIFAR-10 (natural images, 32x32)
-dataset_key=cifar10
-source_images=5000
-seed=42
-rows=10000
-manipulation_version=2024-05-feathered-copy-move-splice-removal
-content_digest=8b5c7e92b8197d5eadc467e8acda6422
-families=copy_move,splicing,removal
-split=train/validation/test grouped by source_id before manipulation
-manipulations=synthetic (alpha-feathered), with ground-truth masks
+corpus=CASIA v2.0 (real forgeries)
+dataset_key=casia2
+rows=12614
+scenes=6523
+masks_available=5123/5123
+benchmark_kind=real
+grouping=linked by shared source photograph, class-aware split

@@ -144,24 +144,56 @@ def generate_figures(frame: pd.DataFrame, results: dict[str, object], figure_dir
     _save(fig, figure_dir / "robustness.png")
     generated.append("robustness.png")
 
-    # 7. Authentic/tampered sample pairs.
-    sample_dir = frame["image_path"].iloc[0]
-    sample_root = Path(sample_dir).parent.parent / "samples"
-    sample_rows = []
-    for _, row in frame[(frame["split"] == "test") & (frame["label"] == 1)].head(6).iterrows():
-        authentic_row = frame[(frame["source_id"] == row["source_id"]) & (frame["label"] == 0)].iloc[0]
-        sample_rows.append((authentic_row, row))
-    fig, axes = plt.subplots(len(sample_rows), 2, figsize=(5.5, max(5.5, len(sample_rows) * 1.65)))
+    # 7. Held-out tampered examples beside their ground-truth masks.
+    #
+    # This used to look up an authentic twin in the same scene, which only exists
+    # in the synthetic benchmark where every source yields exactly one forgery.
+    # Real benchmarks do not guarantee that pairing, so the lookup raised on CASIA.
+    # The masks are the better thing to show anyway: they were stored for every
+    # manipulated image and never rendered, and they are what localisation work
+    # will be scored against.
+    # Sample across families. Taking the first N rows in path order gives an
+    # all-one-family figure, because CASIA sorts its copy-move files ahead of its
+    # spliced ones.
+    held_out = frame[(frame["split"] == "test") & (frame["label"] == 1)]
+    sample_rows = list(held_out.groupby("tamper_type", group_keys=False).head(3).head(6).iterrows())
+    fig, axes = plt.subplots(
+        max(len(sample_rows), 1), 2, figsize=(6.4, max(5.0, len(sample_rows) * 2.1)),
+        gridspec_kw={"hspace": 0.45},
+    )
     if len(sample_rows) == 1:
         axes = np.asarray([axes])
-    for idx, (authentic_row, tampered_row) in enumerate(sample_rows):
-        axes[idx, 0].imshow(Image.open(authentic_row["image_path"]))
-        axes[idx, 0].set_title("Authentic" if idx == 0 else "")
-        axes[idx, 1].imshow(Image.open(tampered_row["image_path"]))
-        axes[idx, 1].set_title(f"Tampered: {tampered_row['tamper_type']}" if idx == 0 else str(tampered_row["tamper_type"]))
+    for idx, (_, row) in enumerate(sample_rows):
+        image = Image.open(row["image_path"]).convert("RGB")
+        axes[idx, 0].imshow(image)
+        axes[idx, 0].set_title("Tampered" if idx == 0 else "", loc="left", fontweight="bold")
         axes[idx, 0].axis("off")
+
+        mask_path = row.get("mask_path")
+        mask = None
+        if isinstance(mask_path, str) and mask_path and Path(mask_path).is_file():
+            with Image.open(mask_path) as handle:
+                # Masks are not always stored at the image's resolution, so resample
+                # nearest-neighbour rather than trusting the two to agree.
+                mask = np.asarray(handle.convert("L").resize(image.size, Image.NEAREST))
+        if mask is not None:
+            axes[idx, 1].imshow(image)
+            axes[idx, 1].imshow(
+                np.ma.masked_where(mask == 0, mask), cmap="autumn", alpha=0.6, vmin=0, vmax=255
+            )
+            axes[idx, 1].set_title(
+                "Ground-truth mask" if idx == 0 else str(row["tamper_type"]),
+                loc="left",
+                fontweight="bold" if idx == 0 else "normal",
+                fontsize=11 if idx == 0 else 9,
+            )
+        else:
+            axes[idx, 1].axis("off")
         axes[idx, 1].axis("off")
-    fig.suptitle("Known source-paired examples from the held-out test split", x=0.05, ha="left", fontweight="bold", color=PALETTE["navy"])
+    fig.suptitle(
+        "Held-out tampered images with ground-truth masks",
+        x=0.05, ha="left", fontweight="bold", color=PALETTE["navy"],
+    )
     _save(fig, figure_dir / "sample_pairs.png")
     generated.append("sample_pairs.png")
 
@@ -220,6 +252,42 @@ def write_presentation_artifacts(
     report_dir.mkdir(parents=True, exist_ok=True)
     presentation_dir.mkdir(parents=True, exist_ok=True)
     test = results["test"]
+    experiment = results["experiment"]
+    is_real = experiment.get("benchmark_kind") == "real"
+    source = str(experiment.get("benchmark_source", "cifar10"))
+    subtitle = (
+        f"Current-status evidence dashboard · real forgeries from {source}"
+        if is_real
+        else "Current-status evidence dashboard · source-safe synthetic pilot benchmark"
+    )
+    groups_note = "linked by shared source photograph" if is_real else "split before manipulation"
+    if is_real:
+        interpretation = (
+            "<b>Interpretation:</b> the corpus is <b>"
+            f"{experiment['corpus']}</b> — real tampered photographs, not edits this "
+            "project generated. Splits are grouped by source photograph so a scene "
+            f"cannot appear in two folds, and the leakage check <b>"
+            f"{'passed' if results['group_leakage_check']['passed'] else 'FAILED'}</b>. "
+            "The limiting factor is now the 143-feature handcrafted bank, not the data."
+        )
+        milestone = (
+            "Add CoMoFoD (copy-move) and COVERAGE as untouched external test sets, "
+            "score a localisation metric (IoU/Dice) against the stored masks, and "
+            "compare this interpretable baseline against a small CNN."
+        )
+    else:
+        interpretation = (
+            "<b>Interpretation:</b> this is a functioning research baseline. The "
+            f"current corpus is <b>{experiment['corpus']}</b>, evaluated on "
+            "source-grouped splits with the leakage check "
+            f"<b>{'passed' if results['group_leakage_check']['passed'] else 'FAILED'}</b>. "
+            "Synthetic manipulations still bound how far these numbers generalise."
+        )
+        milestone = (
+            "Add CASIA v2.0 and CoMoFoD small, group all variants by source scene, "
+            "keep one external dataset untouched, and compare this interpretable "
+            "baseline against a small CNN."
+        )
     html_images = [
         ("System architecture", "system_diagram.png"),
         ("Dataset distribution", "dataset_distribution.png"),
@@ -250,29 +318,34 @@ def write_presentation_artifacts(
 body{{font-family:Inter,system-ui,sans-serif;background:#f8fafc;color:#172554;margin:0;padding:32px}}main{{max-width:1200px;margin:auto}}h1{{font-size:2.4rem;margin:0 0 8px}}h2{{margin-top:36px}}.subtitle{{color:#475569;font-size:1.05rem}}.cards{{display:grid;grid-template-columns:repeat(4,1fr);gap:12px;margin:24px 0}}.metric{{background:white;border:1px solid #dbeafe;border-radius:14px;padding:16px;box-shadow:0 4px 14px #17255412}}.metric b{{font-size:1.7rem;display:block;color:#2563eb}}.gallery{{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}}figure{{margin:0;background:white;border-radius:14px;padding:14px;box-shadow:0 4px 14px #17255412}}figure img{{width:100%;height:auto;border-radius:8px}}figcaption{{font-weight:700;margin-top:8px}}table{{border-collapse:collapse;background:white;width:100%;border-radius:12px;overflow:hidden}}th,td{{padding:10px;border-bottom:1px solid #e2e8f0;text-align:left}}th{{background:#eff6ff}}.note{{background:#fff7ed;border-left:4px solid #d97706;padding:16px;border-radius:8px;margin:20px 0}}@media(max-width:800px){{.cards,.gallery{{grid-template-columns:1fr 1fr}}}}@media(max-width:560px){{.cards,.gallery{{grid-template-columns:1fr}}}}
 </style></head><body><main>
 <h1>AI-Based Image Security and Protection System</h1>
-<div class="subtitle">Current-status evidence dashboard · source-safe synthetic pilot benchmark</div>
+<div class="subtitle">{subtitle}</div>
 <div class="cards">
 <div class="metric"><span>Test ROC-AUC</span><b>{test['roc_auc']:.3f}</b><small>threshold-independent ranking</small></div>
 <div class="metric"><span>Test F1</span><b>{test['f1']:.3f}</b><small>validation-selected threshold</small></div>
-<div class="metric"><span>Source groups</span><b>{results['experiment']['source_groups']:,}</b><small>split before manipulation</small></div>
+<div class="metric"><span>Source groups</span><b>{results['experiment']['source_groups']:,}</b><small>{groups_note}</small></div>
 <div class="metric"><span>Hash + AES checks</span><b>{int(protection['reference_hash_matches']) + int(protection['mutated_file_rejected']) + int(protection['aes_gcm_round_trip']) + int(protection['aes_gcm_modified_ciphertext_rejected'])}/4</b><small>local protection demo</small></div>
 </div>
-<div class="note"><b>Interpretation:</b> this is a functioning research baseline. The current corpus is <b>{results['experiment']['corpus']}</b>, evaluated on source-grouped splits with the leakage check <b>{'passed' if results['group_leakage_check']['passed'] else 'FAILED'}</b>. Synthetic manipulations still bound how far these numbers generalise.</div>
+<div class="note">{interpretation}</div>
 <h2>System and visual evidence</h2><div class="gallery">{cards}</div>
 <h2>Model comparison (held-out test)</h2><table><thead><tr><th>Model</th><th>ROC-AUC</th><th>Balanced accuracy</th><th>F1</th></tr></thead><tbody>{model_rows}</tbody></table>
 <h2>Per-manipulation evidence</h2><table><thead><tr><th>Manipulation</th><th>Test count</th><th>ROC-AUC (vs authentic)</th><th>Recall</th><th>Mean risk score</th></tr></thead><tbody>{tamper_rows}</tbody></table>
 <h2>Protection checks</h2><pre>{json.dumps(protection, indent=2)}</pre>
-<h2>Next research milestone</h2><p>Add CASIA v2.0 and CoMoFoD small, group all variants by source scene, keep one external dataset untouched, and compare this interpretable baseline against a small CNN. Report AUROC, PR-AUC, balanced accuracy, calibration, and robustness by JPEG quality.</p>
+<h2>Next research milestone</h2><p>{milestone}</p>
 </main></body></html>"""
     (report_dir / "current_status.html").write_text(html, encoding="utf-8")
 
+    corpus_action = (
+        f"loads the {source} forgery benchmark distributed by its authors"
+        if is_real
+        else "downloads image data and creates source-safe tamper examples"
+    )
     md = f"""# Current Status Presentation — AI-Based Image Security and Protection System
 
 ## 1. One-sentence update
 
-We have built and executed a reproducible baseline that downloads image data,
-creates source-safe tamper examples, trains an interpretable forensic detector,
-checks cryptographic protection, and generates visual evidence.
+We have built and executed a reproducible baseline that {corpus_action}, trains an
+interpretable forensic detector, checks cryptographic protection, and generates
+visual evidence.
 
 ## 2. What we can show today
 

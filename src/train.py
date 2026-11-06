@@ -415,7 +415,9 @@ def train_and_evaluate(
     fpr, tpr, roc_thresholds = roc_curve(y[test_mask], test_probabilities)
     precision, recall, pr_thresholds = precision_recall_curve(y[test_mask], test_probabilities)
 
-    feature_importances = _feature_importances(model, feature_names)
+    feature_importances = _feature_importances(
+        model, feature_names, X[val_mask], y[val_mask]
+    )
     metadata_path = processed_root / "dataset_metadata.txt"
     corpus_name = "unknown"
     if metadata_path.exists():
@@ -485,14 +487,42 @@ def train_and_evaluate(
     return model, results, feature_names
 
 
-def _feature_importances(model, feature_names: list[str]) -> list[dict[str, object]]:
-    """Model-agnostic ranking: linear coefficients or impurity importance."""
+def _feature_importances(
+    model,
+    feature_names: list[str],
+    X_reference: np.ndarray | None = None,
+    y_reference: np.ndarray | None = None,
+) -> list[dict[str, object]]:
+    """Model-agnostic ranking: coefficients, impurity, or permutation.
+
+    ``HistGradientBoostingClassifier`` exposes neither ``coef_`` nor
+    ``feature_importances_``. Since it is the model that wins on CASIA, the
+    ranking silently came back empty and the figure rendered as a blank axes.
+    Permutation importance is the honest fallback: it measures how much ranking
+    quality degrades when one feature is shuffled, which is defined for every
+    estimator and is measured on validation data only.
+    """
     classifier = model.named_steps["classifier"] if isinstance(model, Pipeline) else model
     values = None
     if hasattr(classifier, "coef_"):
         values = np.asarray(classifier.coef_)[0]
     elif hasattr(classifier, "feature_importances_"):
         values = np.asarray(classifier.feature_importances_)
+
+    if (values is None or len(values) != len(feature_names)) and X_reference is not None:
+        from sklearn.inspection import permutation_importance
+
+        result = permutation_importance(
+            model,
+            X_reference,
+            y_reference,
+            scoring="roc_auc",
+            n_repeats=3,
+            random_state=0,
+            n_jobs=-1,
+        )
+        values = np.asarray(result.importances_mean)
+
     if values is None or len(values) != len(feature_names):
         return []
     ranked = sorted(

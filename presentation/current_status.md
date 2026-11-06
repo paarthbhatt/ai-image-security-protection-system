@@ -2,23 +2,23 @@
 
 ## 1. One-sentence update
 
-We have built and executed a reproducible baseline that downloads image data,
-creates source-safe tamper examples, trains an interpretable forensic detector,
-checks cryptographic protection, and generates visual evidence.
+We have built and executed a reproducible baseline that loads the casia2 forgery benchmark distributed by its authors, trains an
+interpretable forensic detector, checks cryptographic protection, and generates
+visual evidence.
 
 ## 2. What we can show today
 
-- **Dataset:** 10,000 image instances from
-  5,000 source groups (CIFAR-10 (natural images, 32x32)); balanced
+- **Dataset:** 12,614 image instances from
+  6,523 source groups (CASIA v2.0 (real forgeries)); balanced
   authentic/manipulated labels.
-- **Manipulations:** copy_move, removal, splicing.
-- **Model:** logistic_regression over 143
+- **Manipulations:** copy_move, splicing.
+- **Model:** hist_gradient_boosting over 143
   forensic features (selected on validation ROC-AUC from hist_gradient_boosting, logistic_regression, random_forest).
-- **Held-out test:** ROC-AUC **0.657** (95% CI 0.632–0.681),
-  PR-AUC **0.643**, balanced accuracy **0.603**, F1 **0.589**.
+- **Held-out test:** ROC-AUC **0.947** (95% CI 0.938–0.956),
+  PR-AUC **0.901**, balanced accuracy **0.880**, F1 **0.850**.
 - **Leakage check:** no source group appears in two splits — **True**.
-- **Training augmentation:** 14,000 extra rows from
-  jpeg_q70, jpeg_q30, noise, blur (never from test data).
+- **Training augmentation:** 26,220 extra rows from
+  jpeg_q90, jpeg_q70, jpeg_q50, jpeg_q30, noise, blur (never from test data).
 - **Protection:** original hash match = **True**;
   mutated file rejected = **True**;
   AES-GCM round trip = **True**;

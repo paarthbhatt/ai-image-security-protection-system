@@ -1,10 +1,10 @@
 {
-  "sample_file": "data/processed/images/00005_authentic.png",
-  "sha256": "382e5a21f72c8c4912dd84abb88640777350e95e25781e0df5fad9a4b9dc5650",
+  "sample_file": "data/real/casia2/Au/Au_ani_00003.jpg",
+  "sha256": "68c354cb1e598077d478678a034f9a987d8a1d78d9a330d7d10586841bcdb7a8",
   "reference_hash_matches": true,
   "mutated_file_rejected": true,
   "aes_gcm_round_trip": true,
   "aes_gcm_modified_ciphertext_rejected": true,
   "encryption_error": null,
-  "checked_at_utc": "2026-10-24T12:21:45.539909+00:00"
+  "checked_at_utc": "2026-10-28T17:25:16.542462+00:00"
 }

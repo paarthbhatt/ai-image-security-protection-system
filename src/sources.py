@@ -50,12 +50,22 @@ CIFAR_MEMBERS = [
 
 IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
 
+# Bump whenever ``assign_grouped_splits`` would place the same rows in different
+# folds. A cached benchmark carries this tag, because changing the splitter
+# changes which rows a model trains on while leaving every image byte-identical:
+# without it a stored CSV looks valid and the reported metrics silently predate
+# the code that supposedly produced them.
+GROUPING_VERSION = "2024-06-class-aware-greedy"
+
 # Folder names used by public forgery benchmarks to mark the authentic half.
 AUTHENTIC_HINTS = {"au", "auth", "authentic", "original", "originals", "genuine", "pristine", "real"}
 # Folder names used to mark the manipulated half.
 TAMPERED_HINTS = {"tp", "tampered", "tamper", "forged", "forgery", "fake", "manipulated", "spliced", "copy-move", "copymove"}
 # Folder names that mark ground-truth masks.
 MASK_HINTS = {"gt", "mask", "masks", "groundtruth", "ground_truth", "ground-truth"}
+
+# Masks found per dataset root, so a lookup does not rescan the tree each time.
+_MASK_INDEXES: dict[str, dict[str, Path]] = {}
 
 
 class DatasetUnavailable(RuntimeError):
@@ -322,23 +332,60 @@ def _tamper_type_from_name(path: Path) -> str:
     return "unknown_real"
 
 
+def _casia_tamper_type(stem: str) -> str | None:
+    """Forgery family from the letter CASIA puts after ``Tp_``.
+
+    ``D`` (duplication) is copy-move, ``S`` is splicing. The mapping is not
+    guessed from the letters: this tree holds 1,828 D and 3,295 S files, which
+    matches the published v2.0 composition of roughly 1,821 copy-move and 3,275
+    spliced images. Folder names say nothing about the family, so without this the
+    whole dataset collapses into ``unknown_real`` and no per-family figure is
+    possible.
+    """
+    parts = stem.split("_")
+    if len(parts) == 8 and parts[0].lower() == "tp":
+        return {"d": "copy_move", "s": "splicing"}.get(parts[1].lower())
+    return None
+
+
+def _mask_index(dataset_root: Path) -> dict[str, Path]:
+    """stem -> mask path for one dataset root, built once and reused.
+
+    ``find_mask_for`` used to walk the entire tree for every forged image. On
+    CASIA that is 5123 walks of a 3.4 GB directory, which turns a lookup that
+    should be a dict hit into the slowest step of loading the dataset.
+    """
+    key = str(dataset_root)
+    cached = _MASK_INDEXES.get(key)
+    if cached is not None:
+        return cached
+
+    index: dict[str, Path] = {}
+    for mask_dir in dataset_root.rglob("*"):
+        if not mask_dir.is_dir() or not _hint_match(mask_dir.name, MASK_HINTS):
+            continue
+        for candidate in mask_dir.iterdir():
+            if candidate.is_file() and candidate.suffix.lower() in IMAGE_SUFFIXES:
+                index.setdefault(candidate.stem, candidate.resolve())
+    _MASK_INDEXES[key] = index
+    return index
+
+
 def find_mask_for(image: Path, dataset_root: Path) -> Path | None:
     """Best-effort lookup of a ground-truth mask for a forged image."""
-    candidates: list[Path] = []
-    for mask_dir in dataset_root.rglob("*"):
-        if mask_dir.is_dir() and _hint_match(mask_dir.name, MASK_HINTS):
-            for suffix in IMAGE_SUFFIXES:
-                candidates.append(mask_dir / f"{image.stem}{suffix}")
-                candidates.append(mask_dir / f"{image.stem}_gt{suffix}")
-                candidates.append(mask_dir / f"{image.stem}_mask{suffix}")
+    index = _mask_index(dataset_root)
+    for stem in (image.stem, f"{image.stem}_gt", f"{image.stem}_mask"):
+        found = index.get(stem)
+        if found is not None:
+            return found
+
     # CoMoFoD keeps the mask beside the forged image as <scene>_M.png
     if image.stem.upper().endswith("_F"):
         base = image.stem[:-2]
         for suffix in IMAGE_SUFFIXES:
-            candidates.append(image.with_name(f"{base}_M{suffix}"))
-    for candidate in candidates:
-        if candidate.is_file():
-            return candidate.resolve()
+            candidate = image.with_name(f"{base}_M{suffix}")
+            if candidate.is_file():
+                return candidate.resolve()
     return None
 
 
@@ -437,6 +484,13 @@ def load_real_forgery_dataset(
     if not images:
         raise DatasetUnavailable(f"{name}: no images found under {root} ({discover_layout(root)})")
 
+    linked = _linked_scene_keys(images, root)
+    if linked is not None:
+        print(
+            f"  linked {len(images)} images into {len(set(linked.values()))} scenes "
+            "sharing source photographs"
+        )
+
     rows: list[dict[str, object]] = []
     for path in images:
         role = _classify_folder(path.relative_to(root).parent)
@@ -444,6 +498,8 @@ def load_real_forgery_dataset(
             label, tamper_type = 0, "authentic"
         elif role == "tampered":
             label, tamper_type = 1, _tamper_type_from_name(path)
+            if tamper_type == "unknown_real":
+                tamper_type = _casia_tamper_type(path.stem) or tamper_type
         elif role == "mask":
             continue
         else:
@@ -462,7 +518,11 @@ def load_real_forgery_dataset(
         rows.append(
             {
                 "sample_id": f"{name}:{path.relative_to(root).with_suffix('').as_posix()}",
-                "source_id": f"{name}:{_scene_key(path, root)}",
+                "source_id": (
+                    f"{name}:scene:{linked[path]}"
+                    if linked is not None
+                    else f"{name}:{_scene_key(path, root)}"
+                ),
                 "dataset": name,
                 "label": label,
                 "tamper_type": tamper_type,
@@ -483,10 +543,14 @@ def load_real_forgery_dataset(
             "AUTHENTIC_HINTS/TAMPERED_HINTS in src/sources.py."
         )
 
-    frame = assign_grouped_splits(frame, seed=seed)
-
     if max_images is not None and len(frame) > max_images:
         frame = _stratified_cap(frame, max_images, seed)
+
+    # Capping before the split keeps a partly-sampled scene inside one fold. Doing
+    # it afterwards would leave each scene's rows in whatever fold the scene was
+    # already assigned to, which is still leak-free, but the fold sizes reported
+    # for a capped run would no longer add up to the frame that was split.
+    frame = assign_grouped_splits(frame, seed=seed)
 
     return frame.reset_index(drop=True)
 
@@ -495,8 +559,83 @@ def _scene_key(path: Path, root: Path) -> str:
     """Group key: variants of one scene collapse to a single id."""
     stem = path.stem
     stem = re.sub(r"(_F|_M|_gt|_mask|-gt|_gt\d*)$", "", stem, flags=re.IGNORECASE)
-    # CASIA names files Tp_D_CND_... and Au_ani_...; keep the full stem, it is unique.
     return f"{path.parent.relative_to(root).as_posix()}/{stem}"
+
+
+def _casia_sources(stem: str) -> list[str]:
+    """Source photographs named inside one CASIA file, lowercase and unseparated.
+
+    ``Au_ani_00018`` is the photograph itself; ``Tp_D_CND_M_N_ani00018_sec00096_00138``
+    is that photograph with a patch taken from another. Both yield the ids they are
+    built from, so the two files can be recognised as the same scene. Returns an
+    empty list for names that do not follow the convention.
+    """
+    parts = stem.split("_")
+    if len(parts) == 3 and parts[0].lower() == "au" and parts[2].isdigit():
+        return [f"{parts[1]}{parts[2]}".lower()]
+    if len(parts) == 8 and parts[0].lower() == "tp":
+        first, second = parts[5], parts[6]
+        if re.fullmatch(r"[A-Za-z]+\d+", first) and re.fullmatch(r"[A-Za-z]+\d+", second):
+            return [first.lower(), second.lower()]
+    return []
+
+
+def _linked_scene_keys(images: list[Path], root: Path) -> dict[Path, str] | None:
+    """Scene id per file, joining a CASIA original to every forgery made from it.
+
+    Keyed by file stem, ``Au_ani_00018.jpg`` and
+    ``Tp_D_CND_M_N_ani00018_sec00096_00138.tif`` land in different folds. They are
+    the same photograph -- one untouched, one with a patch pasted in -- so the
+    model sees identical content labelled authentic in train and tampered in test.
+    That is the most damaging leak available, and unlike ordinary leakage it
+    inflates the score instead of degrading it.
+
+    Linking has to be transitive, not pairwise: CASIA reuses a small pool of
+    photographs, and 3020 of its 5123 forgeries trace back to 796 shared
+    originals through chains of overlapping source ids.
+
+    Returns ``None`` when the names follow some other convention, so layouts like
+    CoMoFoD and COVERAGE keep the per-file key.
+    """
+    parsed: dict[Path, list[str]] = {}
+    for path in images:
+        sources = _casia_sources(path.stem)
+        if sources:
+            parsed[path] = sources
+    if not parsed or len(parsed) < 0.9 * len(images):
+        return None
+
+    parent: dict[str, str] = {}
+
+    def find(item: str) -> str:
+        parent.setdefault(item, item)
+        while parent[item] != item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+
+    def union(left: str, right: str) -> None:
+        a, b = find(left), find(right)
+        if a != b:
+            parent[b] = a
+
+    for sources in parsed.values():
+        for source in sources:
+            find(source)
+        for other in sources[1:]:
+            union(sources[0], other)
+
+    # Name each component after its lowest member so the id does not depend on
+    # the order files happened to be listed in.
+    members: dict[str, list[str]] = {}
+    for source in parent:
+        members.setdefault(find(source), []).append(source)
+    naming = {root_id: min(group) for root_id, group in members.items()}
+
+    keys: dict[Path, str] = {}
+    for path, sources in parsed.items():
+        keys[path] = naming[find(sources[0])]
+    return keys
 
 
 def _stratified_cap(frame: pd.DataFrame, max_images: int, seed: int) -> pd.DataFrame:
@@ -537,22 +676,56 @@ def assign_grouped_splits(
     seed: int = 42,
     fractions: tuple[float, float, float] = (0.7, 0.15, 0.15),
 ) -> pd.DataFrame:
-    """Split by ``source_id`` so no scene leaks across folds."""
-    frame = frame.copy()
-    groups = np.asarray(sorted(frame["source_id"].unique()), dtype=object)
-    rng = np.random.default_rng(seed)
-    rng.shuffle(groups)
+    """Split by ``source_id`` so no scene leaks across folds.
 
-    n = len(groups)
-    n_train = int(round(n * fractions[0]))
-    n_val = int(round(n * fractions[1]))
-    assignment = {}
-    for group in groups[:n_train]:
-        assignment[group] = "train"
-    for group in groups[n_train : n_train + n_val]:
-        assignment[group] = "validation"
-    for group in groups[n_train + n_val :]:
-        assignment[group] = "test"
+    Groups are placed whole, largest first, each into whichever fold is furthest
+    below target on *both* total rows and positive rows.
+
+    Balancing rows alone is not enough. Slicing the shuffled group list by count
+    ignores group size, and balancing only row totals ignores class: in CASIA one
+    linked scene holds 59% of every tampered image, so placing it by row count
+    fills that fold's positives and leaves the other folds with almost none --
+    a held-out set that cannot measure anything. Weighting the positive deficit
+    as well keeps every fold class-usable.
+
+    A single scene cannot be divided, so the leftover skew is a property of the
+    benchmark, not of this function: the fold holding the largest scene will carry
+    a higher forged rate than the others no matter how groups are placed.
+    """
+    frame = frame.copy()
+    positives = (frame["label"] == 1).astype(int)
+    stats = frame.assign(_pos=positives).groupby("source_id").agg(
+        rows=("label", "size"), pos=("_pos", "sum")
+    )
+
+    order = list(stats.index)
+    np.random.default_rng(seed).shuffle(order)
+    # Stable sort on size keeps the shuffle as the tie-breaker.
+    order.sort(key=lambda group: -stats.loc[group, "rows"])
+
+    total_rows = len(frame)
+    total_pos = int(positives.sum())
+    target_rows = [fraction * total_rows for fraction in fractions]
+    target_pos = [fraction * total_pos for fraction in fractions]
+    names = ["train", "validation", "test"]
+    filled_rows = [0.0, 0.0, 0.0]
+    filled_pos = [0.0, 0.0, 0.0]
+    assignment: dict[str, str] = {}
+
+    for group in order:
+        rows = float(stats.loc[group, "rows"])
+        pos = float(stats.loc[group, "pos"])
+
+        def deficit(index: int) -> float:
+            row_gap = target_rows[index] - filled_rows[index]
+            pos_gap = target_pos[index] - filled_pos[index]
+            return row_gap / max(target_rows[index], 1.0) + pos_gap / max(target_pos[index], 1.0)
+
+        index = max(range(3), key=deficit)
+        assignment[group] = names[index]
+        filled_rows[index] += rows
+        filled_pos[index] += pos
+
     frame["split"] = frame["source_id"].map(assignment)
     return frame
 

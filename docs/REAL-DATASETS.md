@@ -43,6 +43,28 @@ intermittently offline, so it usually has to be fetched by hand.
 Approved size: 7,491 authentic and 5,123 tampered images (CASIA v2.0). Report
 **scene counts, not file counts** — several tampered files derive from one scene.
 
+### The authentic set is not independent of the tampered set
+
+CASIA names each forgery after the photographs it was built from:
+
+```
+Au_ani_00018.jpg                                   the photograph
+Tp_D_CND_M_N_ani00018_sec00096_00138.tif           that photograph, patched
+```
+
+So `Au_ani_00018.jpg` and every `Tp_*_ani00018_*` are the same scene, one
+untouched and one edited. Keyed by filename they land in different folds, and the
+model then sees identical content labelled authentic in one split and tampered in
+another — leakage that *inflates* the score instead of degrading it.
+
+The linkage has to be transitive. CASIA reuses a small pool of photographs, and
+3,020 of its 5,123 forgeries trace back to 796 shared originals through chains of
+overlapping source ids. Measured on the 7,491 + 5,123 layout this gives 6,523
+scenes, of which one holds 3,814 images (794 authentic, 3,020 tampered) — 30% of
+the dataset. That scene cannot be divided, so whichever fold holds it carries a
+higher forged rate than the others. It is a property of the benchmark, not a
+splitter bug, and it has to be disclosed with any per-fold numbers.
+
 Known issue to disclose: a documented share of CASIA labels and masks is wrong.
 Cite the corrections repo when you report localisation quality.
 
