@@ -5,9 +5,30 @@ against the same data and reports the same six metrics in the same order.
 
 ## Base research paper
 
-A. Yadav and D. K. Vishwakarma, "Towards Effective Image Forensics via A Novel
-Computationally Efficient Framework and A New Image Splice Dataset,"
-arXiv:2401.06998, 13 Jan 2024. <https://arxiv.org/abs/2401.06998>
+### Published citation — use this one
+
+A. Yadav and D. K. Vishwakarma, "Toward effective image forensics via a novel
+computationally efficient framework and a new image splice dataset,"
+*Signal, Image and Video Processing*, vol. 18, no. 4, pp. 3341-3352, June 2024.
+DOI: 10.1007/s11760-024-02997-6 (online 16 Mar 2024).
+
+Note the published title says **"Toward"**; the arXiv preprint says **"Towards"**.
+Cite the journal form. The preprint is
+<https://arxiv.org/abs/2401.06998>, and a copy of that PDF is in
+`docs/reference/` because everything below was read from it.
+
+Venue standing, verified against Crossref and journal metrics rather than
+assumed: SCIE and Scopus indexed, SJR Q2, H-index 66, impact factor around 2.0-2.7,
+3 citations on Crossref / 7 on Google Scholar as of this writing. A solid,
+mid-tier, peer-reviewed application paper — not a flagship. Describe it to the
+faculty as *a recent published baseline on our exact dataset*, never as *the
+state of the art*, which it is not.
+
+Supporting reference to cite alongside it, from the same group and a Q1 venue:
+A. Yadav, D. Gupta and D. K. Vishwakarma, "Datasets, clues and state-of-the-arts
+for multimedia forensics: an extensive review," *Expert Systems with
+Applications*, vol. 249C, 2023. It backs the dataset and feature-family choices
+so the study does not rest on a single mid-tier paper.
 
 Chosen because it uses the same dataset (CASIA v2.0), the same task (image-level
 authentic-vs-tampered classification), the same metric suite, and it reports a
@@ -20,7 +41,10 @@ The abstract's headline — **ACC 0.9382, F1 0.9378, AUC 0.9802, MCC 0.8772** �
 32,770-image combined set (two newly proposed splice datasets plus modified
 CASIA v2.0). It must not be quoted as a CASIA number.
 
-Their CASIA-only result is Table 9:
+Their CASIA-only result is Table 9. Every number in this document came from the
+**arXiv** PDF; the journal version is paywalled. They should be identical, but
+the journal governs, so spot-check Table 9 through the college library login
+before quoting 0.9596 as *their* number in a submitted report.
 
 | Model | ACC | P | R | F1 | AUC | MCC |
 |---|---:|---:|---:|---:|---:|---:|
@@ -71,6 +95,13 @@ no deep network. Two things stop this being a claim we can make yet:
 After normalising format ourselves — with a fixed q90 rather than their random
 quality — our AUC fell to 0.868, which is below them. That is the honest gap to
 close.
+
+A fairness caveat that belongs in the report, not in a footnote: we split by
+source scene and they state no scene grouping. If their split was random at the
+file level, CASIA forgeries share source photographs across train and test, so
+their reported numbers are inflated relative to ours in a way that flatters us
+once the shortcut is removed. Say so plainly rather than letting the table imply
+a closer comparison than the protocols allow.
 
 ### Their own ablation supports our finding
 
@@ -171,3 +202,14 @@ required to compete here.
   specifically is not explicit. Ours will be explicit.
 - The corrected ground-truth release documents mask/image resolution mismatches,
   which matters as soon as anyone computes localisation metrics.
+
+## What a journal reviewer would still ask for
+
+Beating this baseline is enough for the course, and enough for the extra marks.
+It is not by itself enough to submit a paper. Reviewers in this field expect a
+second dataset (CoMoFoD, COVERAGE, or PROV+) to show the result is not CASIA-
+specific, and localisation metrics (IoU or Dice) rather than image-level
+accuracy alone. We already load and render the ground-truth masks, so Dice and
+IoU are the cheaper of the two gaps; a second dataset is the expensive one.
+Decide which of those the group is aiming at before anyone starts a long
+training run.
