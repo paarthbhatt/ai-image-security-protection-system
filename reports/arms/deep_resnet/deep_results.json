@@ -1,0 +1,188 @@
+{
+  "model": {
+    "architecture": "resnet18 + one-logit head",
+    "checkpoint": "resnet18:IMAGENET1K_V1",
+    "trainable_parameters": 11177025,
+    "image_size": 224,
+    "batch_size_final": 16,
+    "batch_reductions": [],
+    "epochs": 8,
+    "best_epoch": 7,
+    "lr": 0.001,
+    "weight_decay": 0.0001,
+    "seed": 42,
+    "augmentation": "horizontal and vertical flips; no rotation, no recompression copies",
+    "amp": true
+  },
+  "provenance": {
+    "benchmark_csv": "data/processed/benchmark_casia2.csv",
+    "rows_per_fold": {
+      "train": 8739,
+      "validation": 1940,
+      "test": 1935
+    },
+    "labels_per_fold": {
+      "train": {
+        "0": 5116,
+        "1": 3623
+      },
+      "validation": {
+        "0": 1191,
+        "1": 749
+      },
+      "test": {
+        "0": 1184,
+        "1": 751
+      }
+    },
+    "row_cap": 0,
+    "torch": "2.15.0+cu132",
+    "torchvision": "0.29.2+cu132",
+    "python": "3.14.8",
+    "device": "NVIDIA GeForce RTX 2050",
+    "peak_vram_gib": 0.356,
+    "wall_seconds": 270.4
+  },
+  "validation": {
+    "metrics": {
+      "threshold": 0.3499999999999999,
+      "accuracy": 0.7582474226804123,
+      "balanced_accuracy": 0.773625399216868,
+      "precision": 0.6428571428571429,
+      "recall": 0.8411214953271028,
+      "f1": 0.728744939271255,
+      "roc_auc": 0.8174750773211188,
+      "pr_auc": 0.6709074313050748,
+      "mcc": 0.5328862803809269,
+      "confusion_matrix": [
+        [
+          841,
+          350
+        ],
+        [
+          119,
+          630
+        ]
+      ]
+    },
+    "threshold_selected": 0.3499999999999999
+  },
+  "test": {
+    "metrics": {
+      "threshold": 0.3499999999999999,
+      "accuracy": 0.7617571059431525,
+      "balanced_accuracy": 0.7729378846223054,
+      "precision": 0.653276955602537,
+      "recall": 0.8229027962716379,
+      "f1": 0.7283441367118444,
+      "roc_auc": 0.8220829434627704,
+      "pr_auc": 0.6867815217575292,
+      "mcc": 0.5321645277762063,
+      "confusion_matrix": [
+        [
+          856,
+          328
+        ],
+        [
+          133,
+          618
+        ]
+      ]
+    },
+    "per_family": {
+      "copy_move": {
+        "images": 1285,
+        "forged": 101,
+        "authentic": 1184,
+        "roc_auc": 0.7962394634733744,
+        "balanced_accuracy": 0.7426746052983677,
+        "mean_probability": 0.5702999234199524,
+        "recall_at_training_threshold": 0.7623762376237624
+      },
+      "splicing": {
+        "images": 1834,
+        "forged": 650,
+        "authentic": 1184,
+        "roc_auc": 0.8260986226611226,
+        "balanced_accuracy": 0.7776403326403327,
+        "mean_probability": 0.6014208197593689,
+        "recall_at_training_threshold": 0.8323076923076923
+      }
+    }
+  },
+  "cross_dataset": {
+    "comofod": {
+      "available": true,
+      "images": 1600,
+      "threshold_inherited_from_training_corpus": 0.3499999999999999,
+      "metrics": {
+        "threshold": 0.3499999999999999,
+        "accuracy": 0.52,
+        "balanced_accuracy": 0.52,
+        "precision": 0.5106241699867198,
+        "recall": 0.96125,
+        "f1": 0.6669557675628794,
+        "roc_auc": 0.5072296875,
+        "pr_auc": 0.5148090764079059,
+        "mcc": 0.08504985266163995,
+        "confusion_matrix": [
+          [
+            63,
+            737
+          ],
+          [
+            31,
+            769
+          ]
+        ]
+      },
+      "by_tamper_type": {
+        "copy_move_combination": {
+          "images": 964,
+          "forged": 164,
+          "authentic": 800,
+          "roc_auc": 0.47682164634146335,
+          "balanced_accuracy": 0.514984756097561,
+          "mean_probability": 0.6727012395858765,
+          "recall_at_training_threshold": 0.9512195121951219
+        },
+        "copy_move_distortion": {
+          "images": 956,
+          "forged": 156,
+          "authentic": 800,
+          "roc_auc": 0.5415384615384615,
+          "balanced_accuracy": 0.5105288461538462,
+          "mean_probability": 0.690525472164154,
+          "recall_at_training_threshold": 0.9423076923076923
+        },
+        "copy_move_rotation": {
+          "images": 960,
+          "forged": 160,
+          "authentic": 800,
+          "roc_auc": 0.5005859375,
+          "balanced_accuracy": 0.52375,
+          "mean_probability": 0.6879523992538452,
+          "recall_at_training_threshold": 0.96875
+        },
+        "copy_move_scaling": {
+          "images": 960,
+          "forged": 160,
+          "authentic": 800,
+          "roc_auc": 0.51933203125,
+          "balanced_accuracy": 0.52375,
+          "mean_probability": 0.6991379857063293,
+          "recall_at_training_threshold": 0.96875
+        },
+        "copy_move_translation": {
+          "images": 960,
+          "forged": 160,
+          "authentic": 800,
+          "roc_auc": 0.49948828125,
+          "balanced_accuracy": 0.526875,
+          "mean_probability": 0.6920113563537598,
+          "recall_at_training_threshold": 0.975
+        }
+      }
+    }
+  }
+}

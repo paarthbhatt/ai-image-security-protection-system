@@ -35,10 +35,12 @@ data/processed/features*.npz
 data/processed/seed_*/
 
 # Per-arm runs (--arm): feature caches and fitted models are regenerated on
-demand and can run to gigabytes. Their reports/ and figures/ siblings are small
+# demand and can run to gigabytes. Their reports/ and figures/ siblings are small
 # and ARE evidence, so they stay tracked.
 data/processed/arms/
 models/arms/
+reports/arms/**/*.pt
+*.pt
 
 # Per-dataset metadata snapshots, regenerated from data/real/ on demand.
 data/processed/benchmark_*.csv

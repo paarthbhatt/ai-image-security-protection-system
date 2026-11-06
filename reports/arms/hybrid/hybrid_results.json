@@ -1,0 +1,150 @@
+{
+  "model": {
+    "name": "Model 4: Hybrid (ResNet-18 + 143 Forensic Features)",
+    "selected_classifier": "hist_gradient_boosting",
+    "deep_backbone": "resnet18 (ImageNet-1K fine-tuned)",
+    "feature_dim": 655,
+    "deep_dim": 512,
+    "forensic_dim": 143,
+    "threshold": 0.15499999999999997
+  },
+  "validation": {
+    "threshold": 0.15499999999999997,
+    "accuracy": 0.9144329896907216,
+    "balanced_accuracy": 0.9161894000284734,
+    "precision": 0.8639200998751561,
+    "recall": 0.9238985313751669,
+    "f1": 0.8929032258064517,
+    "roc_auc": 0.9726643641283816,
+    "pr_auc": 0.9559739897833006,
+    "mcc": 0.82307551061957,
+    "confusion_matrix": [
+      [
+        1082,
+        109
+      ],
+      [
+        57,
+        692
+      ]
+    ]
+  },
+  "test": {
+    "metrics": {
+      "threshold": 0.15499999999999997,
+      "accuracy": 0.9095607235142119,
+      "balanced_accuracy": 0.9124629997840716,
+      "precision": 0.8538083538083538,
+      "recall": 0.9254327563249002,
+      "f1": 0.8881789137380192,
+      "roc_auc": 0.9724860096447979,
+      "pr_auc": 0.9528027012536099,
+      "mcc": 0.814321314917009,
+      "confusion_matrix": [
+        [
+          1065,
+          119
+        ],
+        [
+          56,
+          695
+        ]
+      ]
+    },
+    "per_family": {
+      "copy_move": {
+        "images": 1285,
+        "forged": 101,
+        "authentic": 1184,
+        "roc_auc": 0.9732907412362858,
+        "balanced_accuracy": 0.9200436513245919,
+        "mean_probability": 0.8269607437319302,
+        "recall_at_training_threshold": 0.9405940594059405
+      },
+      "splicing": {
+        "images": 1834,
+        "forged": 650,
+        "authentic": 1184,
+        "roc_auc": 0.9723609667359667,
+        "balanced_accuracy": 0.9112850831600832,
+        "mean_probability": 0.8320568880148316,
+        "recall_at_training_threshold": 0.9230769230769231
+      }
+    }
+  },
+  "cross_dataset": {
+    "comofod": {
+      "available": true,
+      "images": 1600,
+      "threshold_inherited": 0.15499999999999997,
+      "metrics": {
+        "threshold": 0.15499999999999997,
+        "accuracy": 0.495,
+        "balanced_accuracy": 0.495,
+        "precision": 0.49572649572649574,
+        "recall": 0.58,
+        "f1": 0.5345622119815668,
+        "roc_auc": 0.49731562500000004,
+        "pr_auc": 0.504295121298028,
+        "mcc": -0.010147709425799718,
+        "confusion_matrix": [
+          [
+            328,
+            472
+          ],
+          [
+            336,
+            464
+          ]
+        ]
+      },
+      "by_tamper_type": {
+        "copy_move_combination": {
+          "images": 964,
+          "forged": 164,
+          "authentic": 800,
+          "roc_auc": 0.47750000000000004,
+          "balanced_accuracy": 0.4763414634146341,
+          "mean_probability": 0.33022184218019984,
+          "recall_at_training_threshold": 0.5426829268292683
+        },
+        "copy_move_distortion": {
+          "images": 956,
+          "forged": 156,
+          "authentic": 800,
+          "roc_auc": 0.577003205128205,
+          "balanced_accuracy": 0.5575641025641026,
+          "mean_probability": 0.4662348811708713,
+          "recall_at_training_threshold": 0.7051282051282052
+        },
+        "copy_move_rotation": {
+          "images": 960,
+          "forged": 160,
+          "authentic": 800,
+          "roc_auc": 0.4501328124999999,
+          "balanced_accuracy": 0.44875,
+          "mean_probability": 0.3124157446178223,
+          "recall_at_training_threshold": 0.4875
+        },
+        "copy_move_scaling": {
+          "images": 960,
+          "forged": 160,
+          "authentic": 800,
+          "roc_auc": 0.51780078125,
+          "balanced_accuracy": 0.5081249999999999,
+          "mean_probability": 0.40183189091382704,
+          "recall_at_training_threshold": 0.60625
+        },
+        "copy_move_translation": {
+          "images": 960,
+          "forged": 160,
+          "authentic": 800,
+          "roc_auc": 0.46662890625000003,
+          "balanced_accuracy": 0.48624999999999996,
+          "mean_probability": 0.3401412747081196,
+          "recall_at_training_threshold": 0.5625
+        }
+      }
+    }
+  }
+}
