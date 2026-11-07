@@ -1,0 +1,142 @@
+{
+  "coverage": {
+    "images": 200,
+    "labels": {
+      "0": 100,
+      "1": 100
+    },
+    "model_2_forensic": {
+      "threshold": 0.35999999999999993,
+      "accuracy": 0.505,
+      "balanced_accuracy": 0.505,
+      "precision": 0.5027932960893855,
+      "recall": 0.9,
+      "f1": 0.6451612903225806,
+      "roc_auc": 0.5269,
+      "pr_auc": 0.522561240900421,
+      "mcc": 0.016310370902867074,
+      "confusion_matrix": [
+        [
+          11,
+          89
+        ],
+        [
+          10,
+          90
+        ]
+      ]
+    },
+    "model_3_deep": {
+      "threshold": 0.3499999999999999,
+      "accuracy": 0.5,
+      "balanced_accuracy": 0.5,
+      "precision": 0.5,
+      "recall": 1.0,
+      "f1": 0.6666666666666666,
+      "roc_auc": 0.4893,
+      "pr_auc": 0.49953384695314274,
+      "mcc": 0.0,
+      "confusion_matrix": [
+        [
+          0,
+          100
+        ],
+        [
+          0,
+          100
+        ]
+      ]
+    },
+    "model_4_hybrid": {
+      "threshold": 0.15499999999999997,
+      "accuracy": 0.505,
+      "balanced_accuracy": 0.505,
+      "precision": 0.5026455026455027,
+      "recall": 0.95,
+      "f1": 0.657439446366782,
+      "roc_auc": 0.5138,
+      "pr_auc": 0.5152653140141085,
+      "mcc": 0.021931723165325632,
+      "confusion_matrix": [
+        [
+          6,
+          94
+        ],
+        [
+          5,
+          95
+        ]
+      ]
+    }
+  },
+  "columbia": {
+    "images": 1845,
+    "labels": {
+      "0": 933,
+      "1": 912
+    },
+    "model_2_forensic": {
+      "threshold": 0.35999999999999993,
+      "accuracy": 0.5056910569105691,
+      "balanced_accuracy": 0.5,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "roc_auc": 0.3968593106560614,
+      "pr_auc": 0.4224171259281308,
+      "mcc": 0.0,
+      "confusion_matrix": [
+        [
+          933,
+          0
+        ],
+        [
+          912,
+          0
+        ]
+      ]
+    },
+    "model_3_deep": {
+      "threshold": 0.3499999999999999,
+      "accuracy": 0.5062330623306233,
+      "balanced_accuracy": 0.5015477802222599,
+      "precision": 0.5030674846625767,
+      "recall": 0.08991228070175439,
+      "f1": 0.15255813953488373,
+      "roc_auc": 0.5910657706699761,
+      "pr_auc": 0.5511358117792271,
+      "mcc": 0.005453442415532517,
+      "confusion_matrix": [
+        [
+          852,
+          81
+        ],
+        [
+          830,
+          82
+        ]
+      ]
+    },
+    "model_4_hybrid": {
+      "threshold": 0.15499999999999997,
+      "accuracy": 0.5056910569105691,
+      "balanced_accuracy": 0.5,
+      "precision": 0.0,
+      "recall": 0.0,
+      "f1": 0.0,
+      "roc_auc": 0.6809281040221132,
+      "pr_auc": 0.6537023889848769,
+      "mcc": 0.0,
+      "confusion_matrix": [
+        [
+          933,
+          0
+        ],
+        [
+          912,
+          0
+        ]
+      ]
+    }
+  }
+}
