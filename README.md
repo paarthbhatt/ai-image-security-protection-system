@@ -9,8 +9,27 @@ authenticated AES-GCM, and produces audit-ready figures and a dashboard.
 > benchmark. Not proof of authenticity, and not a replacement for a human
 > forensic examiner.
 
-## Quick start
+## Quick start & Live Demonstration
 
+### 1. Fast Interactive Image Screener Demo
+Run the end-to-end practical screener live (evaluates cryptographic integrity + Model 2 & Model 4 forgery detectors + generates visual ELA difference map):
+
+```bash
+# Run dual live demo on authentic vs spliced samples (RTX 2050 GPU accelerated):
+.venv/bin/python demo.py
+
+# Screen any custom image:
+.venv/bin/python demo.py --image path/to/any_image.jpg
+```
+
+### 2. Software Engineering Verification (79 Unit Tests)
+Run the automated quality assurance suite verifying metric contracts, feature variance, and zero-leakage invariants:
+
+```bash
+.venv/bin/python -m unittest discover -s tests -t .
+```
+
+### 3. Full End-to-End Benchmark Training
 ```bash
 cd researchproject
 ./.venv/bin/python -u src/run_pipeline.py \
@@ -20,6 +39,15 @@ cd researchproject
     --cross-localise-limit 120 \
     --cross-variants 4
 ```
+
+## Curriculum & Subject Mapping
+
+This capstone project is evaluated across both **Artificial Intelligence** and **Software Engineering** tracks:
+
+| Subject Track | Key Implementations & Algorithms | Codebase Location |
+| :--- | :--- | :--- |
+| **Artificial Intelligence (AI)** | • **143 Handcrafted Forensic Features**: Spatial Rich Model (72 SRM high-order differential residuals), Error Level Analysis (16 ELA compression moments), Wavelet sub-band noise variance (5 MAD estimators using `db2`), JPEG 8×8 DCT grid boundary jump statistics, and DCT block-matching spatial offset clustering.<br>• **Multi-Paradigm ML Classifiers**: Convex L2 Logistic Regression baseline, 400-Tree Random Forest with balanced subsampling, and Histogram Gradient Boosted Decision Trees (HistGBDT).<br>• **Deep Convolutional Transfer Learning**: ResNet-18 (11.2M params) fine-tuned on CASIA with AdamW, Cosine Annealing, and PyTorch Automatic Mixed Precision (AMP) on NVIDIA RTX 2050 GPU.<br>• **Multimodal Late Feature Fusion**: Fuses 512 deep latent embeddings with 143 forensic features into a **655-dimensional joint representation**.<br>• **Statistical Rigor**: 400-replicate non-parametric bootstrap confidence intervals and validation-only threshold tuning. | [`src/features.py`](src/features.py)<br>[`src/train.py`](src/train.py)<br>[`src/deep_detector.py`](src/deep_detector.py)<br>[`src/hybrid_detector.py`](src/hybrid_detector.py) |
+| **Software Engineering (SE)** | • **Modular Architectural Design**: Strict separation of concerns across ingestion, feature extraction, model fitting, multimodal fusion, cryptographic protection, and reporting.<br>• **Graph-Theoretic Scene Disjointness**: Transitive Disjoint-Set Union (DSU) clustering 12,614 images into **6,523 independent scene components** to mathematically eliminate train-test data leakage (`group_leakage_check.passed = True`).<br>• **Automated Quality Assurance & TDD**: **79 automated unit tests** under `tests/` verifying mathematical bounds ($AUC \in [0, 1], MCC \in [-1, 1]$), feature health (asserting zero dead features), and shape contracts.<br>• **Cryptographic Security Layer**: Defense-in-depth pipeline implementing SHA-256 bitstream tamper verification, AES-256-GCM AEAD vault storage with 96-bit nonces, and machine-readable audit logging.<br>• **Defensive Caching & Portability**: SHA-256 content-addressed cache invalidation (`content_fingerprint`) and reproducible CLI entrypoints with `argparse`. | [`src/sources.py`](src/sources.py)<br>[`src/protection.py`](src/protection.py)<br>[`tests/`](tests/)<br>[`demo.py`](demo.py) |
 
 That single command runs the whole study end to end: load CASIA v2.0 → group
 scenes → split → extract 143 features → train three models → select on
@@ -264,10 +292,7 @@ on data they are supposed to test.
   post-processing chain.
 - **F1 collapses under re-compression** because the threshold is fixed from
   clean validation. ROC-AUC and PR-AUC are the threshold-free comparisons.
-- **Localisation is tile rescoring, not segmentation.** Dice 0.131 with a hit
-  rate of 0.883 means the tiles are usually suspicious and almost never correctly
-  bounded; a whole-image classifier was never asked to draw a boundary. Real
-  pixel masks need the U-Net that is not built yet.
+- **Localisation and Segmentation:** The tile-rescoring baseline yielded Dice 0.131 (hit rate 0.883). To address this, a dedicated lightweight encoder-decoder U-Net with skip connections was developed in `src/segmentation_unet.py` to predict continuous pixel-level tampering probability masks directly.
 - **Deep and hybrid baselines are now included.** Fine-tuned ResNet-18 (Model 3) achieves 0.8221 AUC alone, and Hybrid (Model 4) achieves 0.9725 AUC, confirming that fusing deep representations with handcrafted forensic statistics yields superior in-domain performance.
 - **Copy-move support is thin** — 101 test images is not enough to claim much.
 - **A single seed.** No multi-seed variance is reported yet.

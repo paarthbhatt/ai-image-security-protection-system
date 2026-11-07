@@ -330,6 +330,13 @@ def main():
     coverage_metrics = {}
     if coverage_manifest.exists():
         cov_frame = pd.read_csv(coverage_manifest)
+        cov_root = coverage_manifest.parent
+        cov_frame["image_path"] = cov_frame["image_path"].apply(
+            lambda p: str((cov_root / p).relative_to(PROJECT_ROOT)) if isinstance(p, str) and not Path(p).is_absolute() else p
+        )
+        cov_frame["mask_path"] = cov_frame["mask_path"].apply(
+            lambda p: str((cov_root / p).relative_to(PROJECT_ROOT)) if isinstance(p, str) and p and not Path(p).is_absolute() else p
+        )
         cov_loader = DataLoader(
             SegmentationDataset(cov_frame, args.image_size, augment=False),
             batch_size=args.batch_size, shuffle=False, num_workers=args.workers
