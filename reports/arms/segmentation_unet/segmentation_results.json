@@ -1,15 +1,15 @@
 {
   "model": "U-Net (256x256, Encoder-Decoder with Skip Connections)",
   "trainable_parameters": 7763041,
-  "threshold": 0.2,
+  "threshold": 0.3,
   "casia_test": {
-    "tampered_dice": 0.20979489092906092,
-    "tampered_iou": 0.1320541381815788,
-    "authentic_fp_area": 1.0
+    "tampered_dice": 0.28549133836682555,
+    "tampered_iou": 0.20255047624333436,
+    "authentic_fp_area": 0.3278753662109375
   },
   "coverage_zero_shot": {
-    "tampered_dice": 0.19562396537539237,
-    "tampered_iou": 0.11163803100415592,
-    "authentic_fp_area": 1.0
+    "tampered_dice": 0.19291709746790078,
+    "tampered_iou": 0.11455994131782492,
+    "authentic_fp_area": 0.4001470947265625
   }
 }
