@@ -35,3 +35,4 @@ public class ImageRepository {
         return records.size();
     }
 }
+

@@ -132,3 +132,4 @@ public class ImageSecurityService {
         return repository.delete(id);
     }
 }
+

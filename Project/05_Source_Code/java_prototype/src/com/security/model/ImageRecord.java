@@ -63,3 +63,4 @@ public class ImageRecord {
                 encryptedInVault ? "AES-GCM (LOCKED)" : "UNENCRYPTED");
     }
 }
+

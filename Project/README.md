@@ -9,11 +9,11 @@ This directory represents the formal, submission-ready project deliverable adher
 
 ```text
 Project/
-├── 01_Project_Proposal.pdf    # Problem definition, target users, scope, objectives, and work plan
-├── 02_SRS.pdf                 # Software Requirements Specification (IEEE 830 compliant)
-├── 03_SDD.pdf                 # Software Design Document (Architecture, UML, DB, Traceability Matrix)
-├── 04_Wireframes.pdf          # UI/UX wireframes, screen hierarchy, and review checklist
-├── 05_Source_Code/            # Complete source code (Java prototype + full Python AI pipeline)
+├── 01_Project_Proposal.pdf           # Problem definition, target users, scope, objectives, and work plan
+├── 02_SRS.pdf                        # Software Requirements Specification (IEEE 830 compliant)
+├── 03_SDD.pdf                        # Software Design Document (Architecture, UML, DB, Traceability Matrix)
+├── 04_Wireframes.pdf                 # UI/UX wireframes, screen hierarchy, and review checklist
+├── 05_Source_Code/                   # Complete source code (Java prototype + full Python AI pipeline)
 │   ├── java_prototype/        # Section 7 Java Implementation Model (Layered OOP Architecture)
 │   │   ├── src/com/security/
 │   │   │   ├── model/         # ImageRecord entity
@@ -37,6 +37,9 @@ Project/
 │   ├── 07_feature_importances.png         # SRM, ELA, and Wavelet feature weights
 │   ├── 08_demo_ela_inspection.png         # Visual Error Level Analysis difference map
 │   └── 09_java_prototype_console_log.txt  # Java prototype interactive console output
+├── 08_Presentation.pptx       # 10-slide team PowerPoint deck for group evaluation
+├── AI_ML_Final_Project_Report.docx # Formatted university project report in editable Word format
+├── Final_Project_Report.pdf   # 8-page unified publication-grade master project report
 └── README.md                  # This submission master document
 ```
 
@@ -44,12 +47,15 @@ Project/
 
 ## 2. Team Members & Roles
 
-| Team Member Name | Student ID / Roll | Primary Role & Contributions | Evaluation Track |
+**Project Group No.:** Group 41 &nbsp;|&nbsp; **Academic Year:** 2026–2027 &nbsp;|&nbsp; **Programme:** B.Tech CSE  
+**Faculty Mentor:** Dr. Shweta Malwe &nbsp;|&nbsp; **Institution:** Department of Computer Science & Engineering  
+
+| Team Member Name | Group & Programme | Primary Role & Architectural Contributions | Evaluation Track |
 | :--- | :--- | :--- | :--- |
-| **Paarth Bhatt** | Lead Researcher | System Architect, Multimodal Fusion (Model 4), ResNet Backbone | AI & Software Engineering |
-| **Team Member 2** | SWE-02 | Cryptographic Security, AEAD Vault, SHA-256 Verification | Software Engineering |
-| **Team Member 3** | SWE-03 | Data Pipelines, Disjoint-Set Union (DSU) Graph Split, Caching | Software Engineering & AI |
-| **Team Member 4** | SWE-04 | Quality Assurance, 79 Automated Unit Tests, UI Wireframes | Software Engineering |
+| **PARTH BHATT** | Group 41 / B.Tech CSE | Project Lead & System Architect — Multimodal Late-Fusion (Model 4), ResNet-18 Backbone, Evaluation Framework | AI & Software Engineering |
+| **SYED ALI AKBAR** | Group 41 / B.Tech CSE | Data Engineering Lead — CASIA v2.0, Columbia, COVERAGE Pipelines, Disjoint-Set Union (DSU) Graph Partitioning | Software Engineering & AI |
+| **GARVIT SINGH** | Group 41 / B.Tech CSE | Cryptographic Security Lead — FIPS SHA-256 Digest Engine, AES-256-GCM AEAD Vault, U-Net Segmentation Integration | Software Engineering |
+| **NIPUN BATRA** | Group 41 / B.Tech CSE | Quality Assurance Lead — 79 Automated Unit Tests, 25 System Test Cases, UI Wireframes, Requirements Traceability | Software Engineering |
 
 ---
 
@@ -115,3 +121,4 @@ mkdir -p bin
 javac -d bin src/com/security/model/*.java src/com/security/repository/*.java src/com/security/service/*.java src/com/security/app/*.java
 java -cp bin com.security.app.ImageSecurityApp
 ```
+

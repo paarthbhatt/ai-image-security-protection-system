@@ -50,3 +50,4 @@ Timestamp:    2026-11-24T09:45:12.182491Z
 
 Select Operation (1-8): 8
 Exiting Image Security and Protection System. Goodbye!
+
