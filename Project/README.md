@@ -48,7 +48,7 @@ Project/
 ## 2. Team Members & Roles
 
 **Project Group No.:** Group 41 &nbsp;|&nbsp; **Academic Year:** 2026–2027 &nbsp;|&nbsp; **Programme:** B.Tech CSE  
-**Faculty Mentor:** Dr. Shweta Malwe &nbsp;|&nbsp; **Institution:** Department of Computer Science & Engineering  
+**Faculty Mentors:** Dr. Shreyansh Sharma (Software Engineering) & Dr. Shweta Malwe (Artificial Intelligence) &nbsp;|&nbsp; **Institution:** Department of Computer Science & Engineering  
 
 | Team Member Name | Group & Programme | Primary Role & Architectural Contributions | Evaluation Track |
 | :--- | :--- | :--- | :--- |
@@ -61,17 +61,17 @@ Project/
 
 ## 3. Rubric & Deliverables Compliance Matrix
 
-The submission fulfills all criteria of the **15-Mark Evaluation Rubric** (Section 11):
+The submission fulfills all criteria of the **Evaluation Rubric** (Section 11):
 
 | Evaluation Component | Marks | Deliverable Location | Evidence Summary |
 | :--- | :---: | :--- | :--- |
-| **Problem Definition & Scope** | 1 / 1 | `01_Project_Proposal.pdf` | Rigorous problem background, target user roles, explicit in-scope and out-of-scope boundaries, and work breakdown. |
-| **Software Requirements Specification (SRS)** | 4 / 4 | `02_SRS.pdf` | Complete IEEE 830 structure: 10 Functional Requirements (FR-01 to FR-10), 6 Non-Functional Requirements, 4 Use Cases, Data Dictionary, and Acceptance Criteria. |
-| **Software Design Document (SDD) & UML** | 4 / 4 | `03_SDD.pdf` | Layered architecture, 8 detailed module specifications, OOP class models, sequence flows, error handling, security design, and full Requirements Traceability Matrix (RTM). |
-| **Wireframe / UI Design** | 2 / 2 | `04_Wireframes.pdf` | 6 complete low/medium-fidelity screens (Login, Dashboard, Screener, Triple-Viewport Inspection, Vault, Quarantine Modal), navigation hierarchy, and review checklist. |
-| **Java Implementation Model** | 2 / 2 | `05_Source_Code/java_prototype/` | Clean object-oriented layered architecture (Model, Repository, Service, App) implementing CRUD, SHA-256 calculation, and AES-256-GCM vaulting. |
-| **Testing & Traceability** | 2 / 2 | `06_Test_Cases.xlsx` & `07_Test_Evidence/` | 25 detailed test cases mapped to SRS requirements, 100% pass status, backed by 79 automated invariant unit tests and visual evidence. |
-| **Total Marks Achieved** | **15 / 15** | **Complete Project Package** | **Production-Ready & Fully Verified** |
+| **Problem Definition & Scope** | Complete | `01_Project_Proposal.pdf` | Rigorous problem background, target user roles, explicit in-scope and out-of-scope boundaries, and work breakdown. |
+| **Software Requirements Specification (SRS)** | Complete | `02_SRS.pdf` | Complete IEEE 830 structure: 10 Functional Requirements (FR-01 to FR-10), 6 Non-Functional Requirements, 4 Use Cases, Data Dictionary, and Acceptance Criteria. |
+| **Software Design Document (SDD) & UML** | Complete | `03_SDD.pdf` | Layered architecture, 8 detailed module specifications, OOP class models, sequence flows, error handling, security design, and full Requirements Traceability Matrix (RTM). |
+| **Wireframe / UI Design** | Complete | `04_Wireframes.pdf` | 6 complete low/medium-fidelity screens (Login, Dashboard, Screener, Triple-Viewport Inspection, Vault, Quarantine Modal), navigation hierarchy, and review checklist. |
+| **Java Implementation Model** | Complete | `05_Source_Code/java_prototype/` | Clean object-oriented layered architecture (Model, Repository, Service, App) implementing CRUD, SHA-256 calculation, and AES-256-GCM vaulting. |
+| **Testing & Traceability** | Complete | `06_Test_Cases.xlsx` & `07_Test_Evidence/` | 25 detailed test cases mapped to SRS requirements, 100% pass status, backed by 79 automated invariant unit tests and visual evidence. |
+| **All Required Artifacts** | **15 Marks Total** | **Complete Project Package** | **Production-Ready & Fully Verified** |
 
 ---
 
