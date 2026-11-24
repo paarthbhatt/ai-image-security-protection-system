@@ -1,0 +1,10 @@
+{
+  "sample_file": "data/real/casia2/Au/Au_ani_00003.jpg",
+  "sha256": "68c354cb1e598077d478678a034f9a987d8a1d78d9a330d7d10586841bcdb7a8",
+  "reference_hash_matches": true,
+  "mutated_file_rejected": true,
+  "aes_gcm_round_trip": true,
+  "aes_gcm_modified_ciphertext_rejected": true,
+  "encryption_error": null,
+  "checked_at_utc": "2026-11-06T10:00:17.949091+00:00"
+}

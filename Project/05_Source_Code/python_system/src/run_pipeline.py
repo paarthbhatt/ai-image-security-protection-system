@@ -1,0 +1,362 @@
+"""End-to-end command: build a benchmark, train, evaluate, and visualise.
+
+Examples
+--------
+Synthetic benchmark on real natural images::
+
+    python src/run_pipeline.py --dataset cifar10 --source-images 3000
+
+A real forged-image benchmark placed under ``data/real/casia2``::
+
+    python src/run_pipeline.py --real-dataset casia2
+
+The same model, then scored zero-shot on two untouched corpora (the
+publishability result, not the in-domain one)::
+
+    python src/run_pipeline.py --real-dataset casia2 \\
+        --cross-dataset coverage,comofod
+
+Repeat over three seeds and aggregate::
+
+    python src/run_pipeline.py --dataset cifar10 --seeds 42,7,13
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+
+import numpy as np
+
+from dataset import MANIPULATION_FAMILIES, ROBUSTNESS_CONDITIONS, build_benchmark, store_relative
+from protection import run_protection_checks
+from sources import DatasetUnavailable, load_real_forgery_dataset
+from train import train_and_evaluate
+from visualize import generate_figures, write_presentation_artifacts
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+
+# Human-readable corpus names for the benchmarks that can be loaded from disk. The
+# dashboard and results.json read this from the metadata sidecar, which the
+# synthetic builder writes but a real download does not, so without it every real
+# run reports its corpus as "unknown".
+REAL_CORPUS_LABELS = {
+    "casia2": "CASIA v2.0 (real forgeries)",
+    # The same forgeries after the public archive's file-format cue is removed,
+    # rebuilt by src/modified_casia.py to match the base paper's section 4.1.3.
+    "casia2_mod": "CASIA v2.0 modified (uncompressed images recompressed, class-balanced)",
+    "comofod": "CoMoFoD small (real copy-move)",
+    "coverage": "COVERAGE (real copy-move)",
+    "columbia": "Columbia image splicing set (real splices)",
+}
+
+
+def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Build, train, evaluate, and visualise the image-integrity screener.",
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    parser.add_argument("--dataset", default="cifar10", choices=["cifar10", "digits"],
+                        help="Authentic-image corpus for the synthetic benchmark.")
+    parser.add_argument("--source-images", type=int, default=3000,
+                        help="Number of source images taken from the corpus.")
+    parser.add_argument("--real-dataset", default=None,
+                        help="Name of a real forged-image benchmark under --real-root "
+                             "(e.g. casia2, comofod, coverage). Skips synthesis entirely.")
+    parser.add_argument("--real-root", default="data/real",
+                        help="Directory holding manually downloaded real datasets.")
+    parser.add_argument("--max-images", type=int, default=None,
+                        help="Cap the real benchmark to roughly this many images. For smoke "
+                             "tests only: a capped run answers 'does it work', not 'how good is it'.")
+    parser.add_argument("--families", default=",".join(MANIPULATION_FAMILIES),
+                        help="Comma-separated manipulation families to synthesise.")
+    parser.add_argument("--seeds", default="42",
+                        help="Comma-separated seeds; the first produces the full artifact set.")
+    parser.add_argument("--allow-fallback", action="store_true",
+                        help="Permit the digits fallback if CIFAR-10 is unavailable. "
+                             "Off by default so a broken download cannot pass silently.")
+    parser.add_argument("--force-download", action="store_true", help="Re-download CIFAR-10.")
+    parser.add_argument("--force", action="store_true", help="Rebuild the benchmark from scratch.")
+    parser.add_argument("--skip-robustness", action="store_true", help="Skip the post-processing sweep.")
+    parser.add_argument("--no-augment", action="store_true",
+                        help="Disable post-processing augmentation of the training split. "
+                             "Augmentation keeps the detector from collapsing under JPEG re-saving.")
+    parser.add_argument("--augment-fraction", type=float, default=0.5,
+                        help="Fraction of training rows re-used per augmentation condition.")
+    parser.add_argument("--recompute-features", action="store_true",
+                        help="Ignore cached feature matrices and extract from scratch.")
+    parser.add_argument("--localise-limit", type=int, default=240,
+                        help="Images per split scored for region localisation (Dice/IoU). "
+                             "Tile extraction is the slowest step in the run; 0 skips it.")
+    parser.add_argument("--cross-dataset", default="",
+                        help="Comma-separated corpora under --real-root to score zero-shot "
+                             "after training. Nothing about them tunes the detector; an "
+                             "absent corpus is recorded as unavailable instead of failing. "
+                             "Example: --cross-dataset coverage,comofod")
+    parser.add_argument("--cross-localise-limit", type=int, default=120,
+                        help="Images per external corpus scored for region localisation.")
+    parser.add_argument("--cross-variants", type=int, default=4,
+                        help="Post-processing variants scored per external scene. CoMoFoD "
+                             "ships ~40 per photograph; scoring them all would report 260 "
+                             "scenes as 10,400 samples. 0 disables the cap.")
+    parser.add_argument("--arm", default="",
+                        help="Write every artifact under arms/<name>/ instead of over the "
+                             "primary result set. Protocol-parity and deep-model arms are "
+                             "evidence to be read beside the headline, not a replacement "
+                             "for it, so they must not clobber reports/results.json or the "
+                             "figures the documentation cites. Example: --arm casia2_mod")
+    return parser.parse_args()
+
+
+def artifact_dirs(args: argparse.Namespace) -> dict[str, Path]:
+    """Where each artifact family goes, for this run.
+
+    Without an arm the paths are the historical ones that README, BASELINE and
+    the dashboard already point at. With an arm, every root moves together -
+    features, model, reports, figures, presentation - because a half-redirected
+    arm is how one experiment silently overwrites another's cache.
+    """
+    roots = {
+        "processed": PROJECT_ROOT / "data" / "processed",
+        "model": PROJECT_ROOT / "models",
+        "report": PROJECT_ROOT / "reports",
+        "figure": PROJECT_ROOT / "figures",
+        "presentation": PROJECT_ROOT / "presentation",
+    }
+    if not args.arm:
+        return roots
+    arm = args.arm.strip("/")
+    if not arm or "/" in arm or ".." in arm or "\\" in arm:
+        raise SystemExit(f"--arm must be a single safe directory name, got {args.arm!r}")
+    return {key: root / "arms" / arm for key, root in roots.items()}
+
+
+def augmentation_conditions(args: argparse.Namespace) -> tuple[str, ...]:
+    """Conditions used to harden the training set (never derived from test data).
+
+    ``jpeg_q90`` and ``jpeg_q50`` are here because a measured sweep on CASIA
+    showed q90 was the *worst* condition, not the mildest: ROC-AUC 0.65 against
+    0.81 at q70. The old list covered q70, q30, noise and blur, so q90 sat in a
+    blind spot between two trained qualities and the detector had never seen a
+    single-compression copy of anything. Cheap to fix, and visible in the
+    robustness figure rather than hidden.
+    """
+    if args.no_augment:
+        return ()
+    return ("jpeg_q90", "jpeg_q70", "jpeg_q50", "jpeg_q30", "noise", "blur")
+
+
+def build_frame(args: argparse.Namespace, seed: int, processed_root: Path | None = None):
+    processed_root = processed_root or (PROJECT_ROOT / "data" / "processed")
+    processed_root.mkdir(parents=True, exist_ok=True)
+    if args.real_dataset:
+        root = (PROJECT_ROOT / args.real_root / args.real_dataset).resolve()
+        print(f"Loading real benchmark {args.real_dataset!r} from {root} ...")
+        frame = load_real_forgery_dataset(
+            name=args.real_dataset,
+            root=root,
+            mask_root=root,
+            seed=seed,
+            max_images=args.max_images,
+        )
+        store_relative(frame, PROJECT_ROOT).to_csv(
+            processed_root / f"benchmark_{args.real_dataset}.csv", index=False
+        )
+        forged = frame.loc[frame["label"] == 1]
+        (processed_root / "dataset_metadata.txt").write_text(
+            f"corpus={REAL_CORPUS_LABELS.get(args.real_dataset, args.real_dataset)}\n"
+            f"dataset_key={args.real_dataset}\n"
+            f"rows={len(frame)}\n"
+            f"scenes={frame['source_id'].nunique()}\n"
+            f"masks_available={int((forged['mask_path'] != '').sum())}/{len(forged)}\n"
+            "benchmark_kind=real\n"
+            "grouping=linked by shared source photograph, class-aware split\n",
+            encoding="utf-8",
+        )
+        return frame
+
+    families = tuple(item.strip() for item in args.families.split(",") if item.strip())
+    return build_benchmark(
+        raw_root=PROJECT_ROOT / "data" / "raw",
+        processed_root=processed_root,
+        source_images=args.source_images,
+        seed=seed,
+        force=args.force or seed != int(args.seeds.split(",")[0]),
+        dataset=args.dataset,
+        allow_fallback=args.allow_fallback,
+        families=families,
+        force_download=args.force_download,
+    )
+
+
+def main() -> None:
+    args = parse_args()
+    seeds = [int(item) for item in args.seeds.split(",") if item.strip()]
+    primary_seed = seeds[0]
+
+    roots = artifact_dirs(args)
+    model_root, report_root = roots["model"], roots["report"]
+    figure_root, presentation_root = roots["figure"], roots["presentation"]
+    processed_root = roots["processed"]
+    if args.arm:
+        print(f"arm {args.arm!r}: artifacts go to {report_root}", flush=True)
+    conditions = () if args.skip_robustness else ROBUSTNESS_CONDITIONS
+    augment = augmentation_conditions(args)
+
+    frame = build_frame(args, primary_seed, processed_root=processed_root)
+    print(
+        f"Benchmark ready: {len(frame):,} rows, "
+        f"{frame['source_id'].nunique():,} source groups, corpus={frame['dataset'].iloc[0]}"
+    )
+    print("Split sizes:", frame["split"].value_counts().to_dict())
+    print("Labels:", frame["label"].value_counts().to_dict())
+
+    model, results, _ = train_and_evaluate(
+        frame=frame,
+        processed_root=processed_root,
+        model_root=model_root,
+        report_root=report_root,
+        seed=primary_seed,
+        conditions=conditions,
+        augment_conditions=augment,
+        augmentation_fraction=args.augment_fraction,
+        recompute_features=args.recompute_features or args.force,
+        localise_limit=args.localise_limit,
+    )
+
+    if len(seeds) > 1:
+        results["multi_seed"] = _run_extra_seeds(args, seeds[1:], model_root, report_root, processed_root)
+
+    # The dashboard wording depends on whether the corpus contains real forgeries
+    # or edits this project generated. Getting that wrong would let a synthetic
+    # pilot read as real-world evidence.
+    results["experiment"]["benchmark_kind"] = "real" if args.real_dataset else "synthetic"
+    results["experiment"]["benchmark_source"] = args.real_dataset or args.dataset
+
+    first_test_path = frame[frame["split"] == "test"].iloc[0]["image_path"]
+    protection = run_protection_checks(
+        first_test_path, report_root / "protection_artifacts", root=PROJECT_ROOT
+    )
+
+    # The transfer result. Deliberately after training and after the in-domain
+    # localisation pass, because the external corpora must contribute nothing
+    # to the model, its threshold, or its region thresholds.
+    external = [item.strip() for item in args.cross_dataset.split(",") if item.strip()]
+    if external:
+        from cross_dataset import evaluate_cross_dataset
+
+        results["cross_dataset"] = evaluate_cross_dataset(
+            model=model,
+            # The threshold chosen on the training corpus's validation split. Reusing
+            # it verbatim is the whole point of a zero-shot number.
+            threshold=float(results["test"]["threshold"]),
+            training_localisation=results.get("localisation"),
+            datasets={name: PROJECT_ROOT / args.real_root / name for name in external},
+            processed_root=processed_root,
+            seed=primary_seed,
+            localise_limit=args.cross_localise_limit,
+            variants_per_scene=args.cross_variants,
+        )
+
+    figures = generate_figures(frame, results, figure_root)
+    write_presentation_artifacts(
+        frame=frame,
+        results=results,
+        protection=protection,
+        figure_dir=figure_root,
+        report_dir=report_root,
+        presentation_dir=presentation_root,
+    )
+    results["protection"] = protection
+    (report_root / "results.json").write_text(json.dumps(results, indent=2), encoding="utf-8")
+
+    test = results["test"]
+    low, high = results["confidence_intervals"]["test_roc_auc"]
+    print("\nCompleted.")
+    print(f"Model:        {results['experiment']['selected_model']}")
+    print(f"Augmented:    {results['experiment']['augmentation']['extra_training_rows']:,} extra training rows")
+    print(f"Test ROC-AUC: {test['roc_auc']:.3f}  (95% CI {low:.3f}-{high:.3f})")
+    print(f"Test F1:      {test['f1']:.3f}")
+    print(f"Leakage:      {'passed' if results['group_leakage_check']['passed'] else 'FAILED'}")
+    cross = results.get("cross_dataset")
+    if cross:
+        for name, block in cross["datasets"].items():
+            if not block.get("available"):
+                print(f"Zero-shot {name:10} unavailable: {block.get('reason')}")
+                continue
+            image = block["image_level"]
+            region = block["localisation"]
+            dice = f" Dice {region['tiled']['dice']:.3f}" if region.get("available") else ""
+            print(
+                f"Zero-shot {name:10} ACC {image['accuracy']:.3f} "
+                f"AUC {image['roc_auc']:.3f} MCC {image['mcc']:.3f}"
+                f" ({block['images']} images, unseen){dice}"
+            )
+    print(f"Figures:      {len(figures)} files in {figure_root}")
+    print(f"Dashboard:    {report_root / 'current_status.html'}")
+
+
+def _run_extra_seeds(
+    args: argparse.Namespace,
+    seeds: list[int],
+    model_root: Path,
+    report_root: Path,
+    processed_root: Path,
+) -> dict:
+    """Re-run the pipeline for additional seeds; keep metrics only.
+
+    Each seed writes into its own ``seed_<n>`` directory under the run's
+    processed root, so a variance pass cannot overwrite the primary run's
+    benchmark or an arm's artifacts. It *does* read the run's existing feature
+    cache, because the images are the same and only the split changes; without
+    that, a variance pass re-extracts 12,614 images per seed and stops being
+    something anyone will run.
+    """
+    summaries: dict[str, dict[str, float]] = {}
+    for seed in seeds:
+        print(f"\n=== Additional seed {seed} ===")
+        seed_root = processed_root / f"seed_{seed}"
+        try:
+            frame = build_frame(args, seed, processed_root=seed_root)
+            _, seed_results, _ = train_and_evaluate(
+                frame=frame,
+                processed_root=seed_root,
+                model_root=seed_root / "models",
+                report_root=seed_root / "reports",
+                seed=seed,
+                run_robustness=False,
+                augment_conditions=augmentation_conditions(args),
+                augmentation_fraction=args.augment_fraction,
+                # The tile pass dominates the runtime and is insensitive to the
+                # split seed, so variance runs report image-level metrics only.
+                localise_limit=0,
+                feature_cache_root=processed_root,
+            )
+            summaries[str(seed)] = {
+                "roc_auc": seed_results["test"]["roc_auc"],
+                "pr_auc": seed_results["test"]["pr_auc"],
+                "f1": seed_results["test"]["f1"],
+                "mcc": seed_results["test"]["mcc"],
+                "selected_model": seed_results["experiment"]["selected_model"],
+            }
+        except Exception as exc:  # noqa: BLE001 - one bad seed must not lose the others
+            print(f"Seed {seed} failed: {exc}")
+            summaries[str(seed)] = {"error": str(exc)}  # type: ignore[assignment]
+
+    valid = [entry["roc_auc"] for entry in summaries.values() if "roc_auc" in entry]
+    if valid:
+        summaries["mean_roc_auc"] = float(np.mean(valid))  # type: ignore[assignment]
+        summaries["std_roc_auc"] = float(np.std(valid))  # type: ignore[assignment]
+    (report_root / "multiseed.json").write_text(json.dumps(summaries, indent=2), encoding="utf-8")
+    return summaries
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except DatasetUnavailable as error:
+        raise SystemExit(
+            f"\nDataset unavailable: {error}\n"
+            "Nothing was trained. Fix the dataset or pass --allow-fallback explicitly."
+        ) from error

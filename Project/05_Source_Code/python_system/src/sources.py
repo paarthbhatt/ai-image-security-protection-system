@@ -1,0 +1,882 @@
+"""Dataset sources: natural-image corpora and real forensic benchmarks.
+
+Two very different things live here and must never be confused:
+
+*Natural corpora* (CIFAR-10, MNIST-style digits) supply **authentic** images only.
+Manipulations are synthesised on top of them by :mod:`dataset`.
+
+*Real forensic benchmarks* (CASIA v2.0, CoMoFoD, COVERAGE, DSO-1, ...) supply
+**authentic and genuinely manipulated** images that were forged by humans, usually
+with ground-truth masks. They are the only valid evidence of real-world
+performance; synthetic manipulations are a controlled pilot.
+
+Every loader returns rows with the same schema so downstream code is uniform::
+
+    sample_id   unique string id
+    source_id   grouping key; variants of one scene share it (leakage control)
+    dataset     which corpus the row came from
+    label       0 = authentic, 1 = manipulated
+    tamper_type "authentic" | "copy_move" | "splicing" | ... | "unknown"
+    image_path  absolute path to the image file
+    mask_path   absolute path to a ground-truth mask, or "" when absent
+"""
+
+from __future__ import annotations
+
+import hashlib
+import os
+import pickle
+import random
+import re
+import shutil
+import tarfile
+import urllib.request
+from dataclasses import dataclass
+from pathlib import Path
+
+import numpy as np
+import pandas as pd
+
+CIFAR_URL = "https://www.cs.toronto.edu/~kriz/cifar-10-python.tar.gz"
+CIFAR_MEMBERS = [
+    "cifar-10-batches-py/data_batch_1",
+    "cifar-10-batches-py/data_batch_2",
+    "cifar-10-batches-py/data_batch_3",
+    "cifar-10-batches-py/data_batch_4",
+    "cifar-10-batches-py/data_batch_5",
+    "cifar-10-batches-py/test_batch",
+    "cifar-10-batches-py/batches.meta",
+]
+
+IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".bmp", ".tif", ".tiff", ".webp"}
+
+# Bump whenever ``assign_grouped_splits`` would place the same rows in different
+# folds. A cached benchmark carries this tag, because changing the splitter
+# changes which rows a model trains on while leaving every image byte-identical:
+# without it a stored CSV looks valid and the reported metrics silently predate
+# the code that supposedly produced them.
+GROUPING_VERSION = "2024-06-class-aware-greedy"
+
+# Folder names used by public forgery benchmarks to mark the authentic half.
+AUTHENTIC_HINTS = {"au", "auth", "authentic", "original", "originals", "genuine", "pristine", "real"}
+# Folder names used to mark the manipulated half.
+TAMPERED_HINTS = {"tp", "tampered", "tamper", "forged", "forgery", "fake", "manipulated", "spliced", "copy-move", "copymove"}
+# Folder names that mark ground-truth masks.
+MASK_HINTS = {"gt", "mask", "masks", "groundtruth", "ground_truth", "ground-truth"}
+
+# Masks found per dataset root, so a lookup does not rescan the tree each time.
+_MASK_INDEXES: dict[str, dict[str, Path]] = {}
+
+
+class DatasetUnavailable(RuntimeError):
+    """Raised when a requested dataset is missing or incomplete.
+
+    Deliberately fatal by default: a silently substituted dataset invalidates every
+    number produced afterwards.
+    """
+
+
+@dataclass
+class Corpus:
+    """An array-backed authentic-image corpus."""
+
+    images: np.ndarray  # N,H,W,C uint8
+    labels: np.ndarray  # N int64 (class labels, not authenticity)
+    name: str
+    source_ids: np.ndarray  # N str, stable per image
+
+    def __len__(self) -> int:
+        return int(len(self.images))
+
+
+# ---------------------------------------------------------------------------
+# Natural image corpora (authentic-only)
+# ---------------------------------------------------------------------------
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1 << 20), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def cifar_archive_is_complete(archive: Path) -> bool:
+    """Return True only if the archive is a readable tar holding all CIFAR members."""
+    if not archive.exists() or archive.stat().st_size < 150_000_000:
+        return False
+    try:
+        with tarfile.open(archive, "r:gz") as tar:
+            present = set(tar.getnames())
+    except (tarfile.TarError, OSError):
+        return False
+    return all(member in present for member in CIFAR_MEMBERS)
+
+
+def download_cifar10(raw_root: Path, force: bool = False, verbose: bool = True) -> Path:
+    """Download and verify CIFAR-10, returning the directory holding the batches.
+
+    The archive is downloaded to ``.part`` and only renamed once the tar is proven
+    readable and complete, so an interrupted transfer can never masquerade as a
+    good dataset.
+    """
+    raw_root.mkdir(parents=True, exist_ok=True)
+    archive = raw_root / "cifar-10-python.tar.gz"
+    extracted = raw_root / "cifar-10-batches-py"
+
+    if cifar_archive_is_complete(archive) and not force:
+        if not extracted.exists() or len(list(extracted.iterdir())) < len(CIFAR_MEMBERS):
+            _extract_cifar(archive, raw_root)
+        return extracted
+
+    partial = raw_root / "cifar-10-python.tar.gz.part"
+    if partial.exists() and not force:
+        if verbose:
+            print(f"Resuming partial CIFAR-10 download from {partial.stat().st_size / 1e6:.1f} MB ...")
+        _download(archive_url=CIFAR_URL, destination=partial, resume=True, verbose=verbose)
+    else:
+        if verbose:
+            print(f"Downloading CIFAR-10 from {CIFAR_URL} ...")
+        _download(archive_url=CIFAR_URL, destination=partial, resume=force, verbose=verbose)
+
+    if not cifar_archive_is_complete(partial):
+        raise DatasetUnavailable(
+            f"CIFAR-10 archive at {partial} is incomplete or corrupt "
+            f"({partial.stat().st_size if partial.exists() else 0} bytes). "
+            f"Expected ~170 MB. Re-run, or download {CIFAR_URL} manually and place it at {archive}."
+        )
+    partial.replace(archive)
+    _extract_cifar(archive, raw_root)
+    return extracted
+
+
+def _download(archive_url: str, destination: Path, resume: bool, verbose: bool) -> None:
+    """Stream a URL to disk with optional byte-range resume and progress output."""
+    request = urllib.request.Request(archive_url, headers={"User-Agent": "researchproject/1.0"})
+    offset = destination.stat().st_size if (resume and destination.exists()) else 0
+    if offset:
+        request.add_header("Range", f"bytes={offset}-")
+    try:
+        with urllib.request.urlopen(request, timeout=60) as response:
+            mode = "ab" if offset and response.status == 206 else "wb"
+            if mode == "wb":
+                offset = 0
+            total = response.headers.get("Content-Length")
+            total = (int(total) + offset) if total else 0
+            written = offset
+            with destination.open(mode) as handle:
+                while True:
+                    chunk = response.read(1 << 18)
+                    if not chunk:
+                        break
+                    handle.write(chunk)
+                    written += len(chunk)
+                    if verbose and total and written % (8 << 18) < (1 << 18):
+                        print(f"  {written / 1e6:7.1f} / {total / 1e6:.1f} MB", flush=True)
+    except urllib.error.HTTPError as exc:
+        if exc.code == 416 and destination.exists():
+            return  # range already satisfied: the partial file is complete
+        raise
+
+
+def _extract_cifar(archive: Path, raw_root: Path) -> None:
+    staging = raw_root / "_cifar_extract"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir(parents=True)
+    with tarfile.open(archive, "r:gz") as tar:
+        tar.extractall(staging)
+    origin = staging / "cifar-10-batches-py"
+    target = raw_root / "cifar-10-batches-py"
+    if target.exists():
+        shutil.rmtree(target)
+    origin.rename(target)
+    shutil.rmtree(staging, ignore_errors=True)
+
+
+def load_cifar10(raw_root: Path, count: int, seed: int = 42, force_download: bool = False) -> Corpus:
+    """Load authentic natural images from the official CIFAR-10 train split."""
+    extracted = download_cifar10(raw_root, force=force_download)
+    images: list[np.ndarray] = []
+    labels: list[int] = []
+    for batch_idx in range(1, 6):
+        with (extracted / f"data_batch_{batch_idx}").open("rb") as handle:
+            batch = pickle.load(handle, encoding="bytes")
+        data = np.asarray(batch[b"data"], dtype=np.uint8).reshape(-1, 3, 32, 32)
+        images.append(data.transpose(0, 2, 3, 1))
+        labels.extend(int(value) for value in batch[b"labels"])
+    all_images = np.concatenate(images, axis=0)
+    all_labels = np.asarray(labels, dtype=np.int64)
+
+    rng = np.random.default_rng(seed)
+    count = min(int(count), len(all_images))
+    chosen = np.sort(rng.choice(len(all_images), size=count, replace=False))
+    return Corpus(
+        images=all_images[chosen],
+        labels=all_labels[chosen],
+        name="CIFAR-10 (natural images, 32x32)",
+        source_ids=np.asarray([f"cifar10_{int(i):05d}" for i in chosen], dtype=object),
+    )
+
+
+def load_digits_fallback(count: int, seed: int = 42) -> Corpus:
+    """Load scikit-learn digits as an explicitly-labelled emergency pilot corpus."""
+    from sklearn.datasets import load_digits
+    from PIL import Image
+
+    digits = load_digits()
+    gray = digits.images.astype(np.float32)
+    gray = (gray - gray.min()) / (gray.max() - gray.min()) * 255.0
+    gray = gray.astype(np.uint8)
+    rgb = np.repeat(gray[..., None], 3, axis=-1)
+    upscaled = np.stack(
+        [np.asarray(Image.fromarray(img).resize((32, 32), Image.Resampling.NEAREST)) for img in rgb],
+        axis=0,
+    )
+    rng = np.random.default_rng(seed)
+    count = min(int(count), len(upscaled))
+    chosen = np.sort(rng.choice(len(upscaled), size=count, replace=False))
+    return Corpus(
+        images=upscaled[chosen],
+        labels=digits.target.astype(np.int64)[chosen],
+        name="scikit-learn digits fallback (8x8 grayscale, upscaled to 32x32 RGB)",
+        source_ids=np.asarray([f"digits_{int(i):05d}" for i in chosen], dtype=object),
+    )
+
+
+# ---------------------------------------------------------------------------
+# Real forensic benchmarks (authentic + human-made manipulations)
+# ---------------------------------------------------------------------------
+
+
+def _normalise(text: str) -> str:
+    """Lowercase and strip separators so folder names compare predictably."""
+    return re.sub(r"[^a-z]", "", text.lower())
+
+
+def _hint_match(name: str, hints: set[str]) -> bool:
+    """Match a folder name against a hint set without false positives.
+
+    Short hints such as ``au`` or ``tp`` are matched exactly, because as
+    substrings they would fire on unrelated words (``au`` occurs inside
+    ``default``). Longer hints match as substrings so real-world names like
+    ``CASIA 2 Groundtruth`` still resolve.
+    """
+    normalised = _normalise(name)
+    if not normalised:
+        return False
+    for hint in hints:
+        clean = _normalise(hint)
+        if not clean:
+            continue
+        if len(clean) >= 4:
+            if clean in normalised:
+                return True
+        elif normalised == clean:
+            return True
+    return False
+
+
+def _iter_images(root: Path) -> list[Path]:
+    return sorted(
+        path for path in root.rglob("*")
+        if path.is_file() and path.suffix.lower() in IMAGE_SUFFIXES and not _is_mask_path(path)
+    )
+
+
+def _is_comofod_mask(path: Path) -> bool:
+    """True for a CoMoFoD ``<scene>_M`` mask that accompanies a ``<scene>_F`` forgery.
+
+    Without this check the mask files are counted as authentic images, which
+    silently corrupts the label balance.
+    """
+    stem = path.stem
+    if not stem.upper().endswith("_M"):
+        return False
+    base = stem[:-2]
+    return any(path.with_name(f"{base}_F{suffix}").is_file() for suffix in IMAGE_SUFFIXES)
+
+
+# CoMoFoD small v2 puts 52 files per scene in one flat directory:
+#
+#   <id>_B          the base photograph
+#   <id>_O          that photograph, and <id>_O_<CODE> its post-processed copies
+#   <id>_F          a copy-move forgery, and <id>_F_<CODE> its post-processed copies
+#   <id>_M          the single mask, reused for every forgery variant because the
+#                   codes (JPEG, blur, noise, colour) change pixels, never geometry
+#
+# Nothing in the folder name says which class a file belongs to, so the role has
+# to come from the filename. Reading only a trailing ``_F`` -- the old behaviour
+# -- labels all 24 post-processed forgeries per scene as authentic: 4,800 of the
+# 5,000 forgeries in this corpus, silently, and the class balance looks plausible
+# enough that no check complains.
+COMOFOD_STEM = re.compile(r"^(?P<scene>\d+)_(?P<role>[BOFM])(?:_.*)?$", re.IGNORECASE)
+
+
+def _comofod_parts(stem: str) -> tuple[str, str] | None:
+    """Scene id and role letter for one CoMoFoD-style filename, else None."""
+    match = COMOFOD_STEM.match(stem)
+    if match is None:
+        return None
+    return match.group("scene"), match.group("role").upper()
+
+
+def _looks_like_comofod(images: list[Path]) -> bool:
+    """Whether a tree is named in the CoMoFoD convention, decided from evidence.
+
+    Thresholded on the whole tree rather than a dataset name, so the rule cannot
+    misfire on some other corpus that happens to contain ``12_F.png``, and cannot
+    be skipped because somebody typed the wrong ``--real-dataset`` label.
+    """
+    if len(images) < 50:
+        return False
+    matches = sum(1 for path in images if _comofod_parts(path.stem) is not None)
+    return matches / len(images) > 0.8
+
+
+def _is_mask_path(path: Path) -> bool:
+    if any(_hint_match(part, MASK_HINTS) for part in path.parts[:-1]):
+        return True
+    if _is_comofod_mask(path):
+        return True
+    stem = _normalise(path.stem)
+    return stem.endswith(("gt", "mask")) or "groundtruth" in stem
+
+
+# CoMoFoD ships a readme.txt that groups its scenes by what was done to the
+# copied region: five sections of forty scenes, an uppercase header line, then
+# one line per scene. That is the corpus stating its own construction, and it
+# decides the tamper type far better than a filename can -- a detector built on
+# translation offsets can only ever address the first of those five sections,
+# so scoring the corpus without this split hides which forgeries are missed and
+# why.
+COMOFOD_SECTION = re.compile(r"^(TRANSLATION|ROTATION|SCALING|DISTORTION|COMBINATION)$")
+COMOFOD_README_LINE = re.compile(r"^(?P<scene>\d{3})\b")
+COMOFOD_FAMILY_LABELS = {
+    "translation": "copy_move_translation",
+    "rotation": "copy_move_rotation",
+    "scaling": "copy_move_scaling",
+    "distortion": "copy_move_distortion",
+    "combination": "copy_move_combination",
+}
+
+
+def _comofod_families(images: list[Path]) -> dict[str, str]:
+    """Scene id -> documented transformation family, read from the corpus itself.
+
+    Empty when no readme is present, which leaves the caller to fall back to the
+    generic ``copy_move`` label rather than inventing a taxonomy.
+    """
+    readme: Path | None = None
+    for directory in dict.fromkeys(path.parent for path in images):
+        for candidate in (directory / "readme.txt", directory / "README.txt"):
+            if candidate.is_file():
+                readme = candidate
+                break
+        if readme is not None:
+            break
+    if readme is None:
+        return {}
+
+    try:
+        lines = readme.read_text(encoding="utf-8", errors="ignore").splitlines()
+    except OSError:
+        return {}
+
+    families: dict[str, str] = {}
+    current: str | None = None
+    for line in lines:
+        stripped = line.strip()
+        header = COMOFOD_SECTION.match(stripped.upper())
+        if header is not None:
+            current = header.group(1).lower()
+            continue
+        scene = COMOFOD_README_LINE.match(stripped)
+        if scene is not None and current is not None:
+            families.setdefault(scene.group("scene"), COMOFOD_FAMILY_LABELS[current])
+    return families
+
+
+def _classify_folder(path: Path) -> str | None:
+    """Map a directory path onto 'authentic' / 'tampered' / 'mask', else None."""
+    for part in reversed(path.parts):
+        if not part:
+            continue
+        if _hint_match(part, MASK_HINTS):
+            return "mask"
+        if _hint_match(part, AUTHENTIC_HINTS):
+            return "authentic"
+        if _hint_match(part, TAMPERED_HINTS):
+            return "tampered"
+    return None
+
+
+def _tamper_type_from_name(path: Path) -> str:
+    text = " ".join(path.parts).lower()
+    if "copy" in text and "move" in text:
+        return "copy_move"
+    if "splic" in text or "splice" in text:
+        return "splicing"
+    # The Columbia evaluation set keeps both classes under generic folder names
+    # (``AuthenticImages`` / ``TamperedImages``), so nothing in the path says how
+    # it was forged. The corpus itself does: every tampered image there is a
+    # splicing, which is the dataset's published construction.
+    if "columbia" in text:
+        return "splicing"
+    if "remov" in text or "inpaint" in text:
+        return "removal"
+    return "unknown_real"
+
+
+def _casia_tamper_type(stem: str) -> str | None:
+    """Forgery family from the letter CASIA puts after ``Tp_``.
+
+    ``D`` (duplication) is copy-move, ``S`` is splicing. The mapping is not
+    guessed from the letters: this tree holds 1,828 D and 3,295 S files, which
+    matches the published v2.0 composition of roughly 1,821 copy-move and 3,275
+    spliced images. Folder names say nothing about the family, so without this the
+    whole dataset collapses into ``unknown_real`` and no per-family figure is
+    possible.
+    """
+    parts = stem.split("_")
+    if len(parts) == 8 and parts[0].lower() == "tp":
+        return {"d": "copy_move", "s": "splicing"}.get(parts[1].lower())
+    return None
+
+
+def _mask_index(dataset_root: Path) -> dict[str, Path]:
+    """stem -> mask path for one dataset root, built once and reused.
+
+    ``find_mask_for`` used to walk the entire tree for every forged image. On
+    CASIA that is 5123 walks of a 3.4 GB directory, which turns a lookup that
+    should be a dict hit into the slowest step of loading the dataset.
+    """
+    key = str(dataset_root)
+    cached = _MASK_INDEXES.get(key)
+    if cached is not None:
+        return cached
+
+    index: dict[str, Path] = {}
+    for mask_dir in dataset_root.rglob("*"):
+        if not mask_dir.is_dir() or not _hint_match(mask_dir.name, MASK_HINTS):
+            continue
+        for candidate in mask_dir.iterdir():
+            if candidate.is_file() and candidate.suffix.lower() in IMAGE_SUFFIXES:
+                index.setdefault(candidate.stem, candidate.resolve())
+    _MASK_INDEXES[key] = index
+    return index
+
+
+def find_mask_for(image: Path, dataset_root: Path) -> Path | None:
+    """Best-effort lookup of a ground-truth mask for a forged image."""
+    index = _mask_index(dataset_root)
+    for stem in (image.stem, f"{image.stem}_gt", f"{image.stem}_mask"):
+        found = index.get(stem)
+        if found is not None:
+            return found
+
+    # CoMoFoD small: one mask per scene named <id>_M, shared by the base forgery
+    # and every post-processed copy of it. The masks sit in the same flat
+    # directory as the images, so there is no mask folder for the index to find.
+    parts = _comofod_parts(image.stem)
+    if parts is not None and parts[1] == "F":
+        for suffix in IMAGE_SUFFIXES:
+            candidate = image.with_name(f"{parts[0]}_M{suffix}")
+            if candidate.is_file():
+                return candidate.resolve()
+
+    # CoMoFoD keeps the mask beside the forged image as <scene>_M.png
+    if image.stem.upper().endswith("_F"):
+        base = image.stem[:-2]
+        for suffix in IMAGE_SUFFIXES:
+            candidate = image.with_name(f"{base}_M{suffix}")
+            if candidate.is_file():
+                return candidate.resolve()
+    return None
+
+
+def discover_layout(root: Path) -> str:
+    """Describe how a dataset directory is organised, for error messages."""
+    if not root.exists():
+        return "missing"
+    top = sorted({p.name for p in root.iterdir()})
+    return f"{root} -> {top[:12]}"
+
+
+REQUIRED_MANIFEST_COLUMNS = {"image_path", "label"}
+
+
+def load_manifest(manifest: Path, name: str, seed: int) -> pd.DataFrame:
+    """Load an explicit CSV manifest, bypassing layout auto-detection.
+
+    Any benchmark whose naming convention is not recognised can be described
+    once and loaded forever. Relative paths resolve against the manifest's own
+    directory. Required columns are ``image_path`` and ``label``; ``tamper_type``,
+    ``source_id`` and ``mask_path`` are optional.
+    """
+    import pandas as pd
+
+    frame = pd.read_csv(manifest)
+    missing = REQUIRED_MANIFEST_COLUMNS - set(frame.columns)
+    if missing:
+        raise DatasetUnavailable(
+            f"{name}: manifest {manifest} is missing required columns {sorted(missing)}."
+        )
+
+    base = manifest.parent
+
+    def resolve(value) -> str:
+        if value is None or (isinstance(value, float) and pd.isna(value)) or str(value).strip() == "":
+            return ""
+        path = Path(str(value))
+        return str((path if path.is_absolute() else base / path).resolve())
+
+    frame = frame.copy()
+    frame["image_path"] = frame["image_path"].map(resolve)
+    frame["mask_path"] = frame["mask_path"].map(resolve) if "mask_path" in frame else ""
+    frame["label"] = frame["label"].astype(int)
+    frame["tamper_type"] = (
+        frame["tamper_type"].fillna("unknown_real") if "tamper_type" in frame else "unknown_real"
+    )
+    frame.loc[frame["label"] == 0, "tamper_type"] = "authentic"
+    frame["dataset"] = name
+    frame["source_id"] = (
+        frame["source_id"].astype(str) if "source_id" in frame else frame["image_path"].map(lambda p: Path(p).stem)
+    )
+    frame["sample_id"] = frame["image_path"].map(lambda p: f"{name}:{Path(p).stem}")
+
+    present = frame[frame["image_path"].map(lambda p: Path(p).is_file())]
+    if present.empty:
+        raise DatasetUnavailable(f"{name}: no image listed in {manifest} exists on disk.")
+    if len(present) < len(frame):
+        print(f"  warning: {len(frame) - len(present)} manifest rows point at missing files")
+
+    if not {0, 1}.issubset(set(present["label"])):
+        raise DatasetUnavailable(f"{name}: manifest must contain both label 0 and label 1.")
+
+    columns = ["sample_id", "source_id", "dataset", "label", "tamper_type", "image_path", "mask_path"]
+    return assign_grouped_splits(present[columns].reset_index(drop=True), seed=seed)
+
+
+def load_real_forgery_dataset(
+    name: str,
+    root: Path,
+    mask_root: Path | None = None,
+    max_images: int | None = None,
+    seed: int = 42,
+) -> pd.DataFrame:
+    """Load any authentic/tampered benchmark arranged in the usual public layout.
+
+    Works out of the box for CASIA v2.0 (``Au/`` + ``Tp/``), CoMoFoD
+    (``*_F.png`` / ``*_M.png`` per scene) and COVERAGE (``image/`` + ``mask/``),
+    and for any other dataset that separates authentic from manipulated folders.
+
+    Rows for one scene share a ``source_id`` so grouped splits keep every variant
+    of a scene inside a single fold.
+    """
+    root = Path(root).expanduser().resolve()
+    if not root.exists():
+        raise DatasetUnavailable(
+            f"{name}: dataset directory not found at {root}. "
+            "Download it manually and unpack it there (see docs/REAL-DATASETS.md)."
+        )
+
+    for candidate in (root / "manifest.csv", root / f"{name}_manifest.csv"):
+        if candidate.is_file():
+            print(f"  using explicit manifest {candidate.name}")
+            return load_manifest(candidate, name, seed)
+
+    images = _iter_images(root)
+    if not images:
+        raise DatasetUnavailable(f"{name}: no images found under {root} ({discover_layout(root)})")
+
+    linked = _linked_scene_keys(images, root)
+    if linked is not None:
+        print(
+            f"  linked {len(images)} images into {len(set(linked.values()))} scenes "
+            "sharing source photographs"
+        )
+
+    comofod_like = _looks_like_comofod(images)
+    comofod_families: dict[str, str] = {}
+    if comofod_like:
+        print(f"  {name}: filenames follow the CoMoFoD <id>_<B|O|F>[_<code>] convention")
+        comofod_families = _comofod_families(images)
+        if comofod_families:
+            counted = pd.Series(comofod_families.values()).value_counts().to_dict()
+            print(f"  {name}: readme.txt documents {len(comofod_families)} scenes by geometry {counted}")
+        else:
+            print(f"  {name}: no readme.txt found, tamper type stays generic copy_move")
+
+    rows: list[dict[str, object]] = []
+    for path in images:
+        role = _classify_folder(path.relative_to(root).parent)
+        if role == "authentic":
+            label, tamper_type = 0, "authentic"
+        elif role == "tampered":
+            label, tamper_type = 1, _tamper_type_from_name(path)
+            if tamper_type == "unknown_real":
+                tamper_type = _casia_tamper_type(path.stem) or tamper_type
+        elif role == "mask":
+            continue
+        elif comofod_like:
+            parts = _comofod_parts(path.stem)
+            if parts is None or parts[1] == "M":
+                continue
+            if parts[1] == "F":
+                # Every forgery here is a copy-move of part of the same image;
+                # the readme says which geometric transformation the copied
+                # region carries, and that is what separates detectable from
+                # undetectable by a translation-offset detector.
+                label = 1
+                tamper_type = comofod_families.get(parts[0], "copy_move")
+            else:
+                label, tamper_type = 0, "authentic"
+        else:
+            # CoMoFoD convention: <scene>_F (forged) / <scene>_M (mask) / <scene> (original)
+            stem = path.stem
+            if stem.upper().endswith("_F"):
+                label, tamper_type = 1, "unknown_real"
+            else:
+                label, tamper_type = 0, "authentic"
+
+        mask_path = ""
+        if label == 1 and mask_root is not None:
+            found = find_mask_for(path, Path(mask_root).expanduser().resolve())
+            mask_path = str(found) if found else ""
+
+        rows.append(
+            {
+                "sample_id": f"{name}:{path.relative_to(root).with_suffix('').as_posix()}",
+                "source_id": (
+                    f"{name}:scene:{linked[path]}"
+                    if linked is not None
+                    else f"{name}:{_scene_key(path, root, comofod=comofod_like)}"
+                ),
+                "dataset": name,
+                "label": label,
+                "tamper_type": tamper_type,
+                "image_path": str(path.resolve()),
+                "mask_path": mask_path,
+            }
+        )
+
+    frame = pd.DataFrame(rows)
+    if frame.empty:
+        raise DatasetUnavailable(f"{name}: layout at {root} produced no labelled images.")
+
+    if not (frame["label"] == 0).any() or not (frame["label"] == 1).any():
+        raise DatasetUnavailable(
+            f"{name}: only one class was found under {root} "
+            f"({frame['label'].value_counts().to_dict()}). Authentic and manipulated "
+            "images must both be present; check the folder names against "
+            "AUTHENTIC_HINTS/TAMPERED_HINTS in src/sources.py."
+        )
+
+    if max_images is not None and len(frame) > max_images:
+        frame = _stratified_cap(frame, max_images, seed)
+
+    # Capping before the split keeps a partly-sampled scene inside one fold. Doing
+    # it afterwards would leave each scene's rows in whatever fold the scene was
+    # already assigned to, which is still leak-free, but the fold sizes reported
+    # for a capped run would no longer add up to the frame that was split.
+    frame = assign_grouped_splits(frame, seed=seed)
+
+    return frame.reset_index(drop=True)
+
+
+def _scene_key(path: Path, root: Path, comofod: bool = False) -> str:
+    """Group key: variants of one scene collapse to a single id."""
+    stem = path.stem
+    if comofod:
+        parts = _comofod_parts(stem)
+        if parts is not None:
+            # 001_B, 001_O_JC5 and 001_F_JC5 are one photograph, so one scene.
+            return f"{path.parent.relative_to(root).as_posix()}/comofod_{parts[0]}"
+    stem = re.sub(r"(_F|_M|_gt|_mask|-gt|_gt\d*)$", "", stem, flags=re.IGNORECASE)
+    return f"{path.parent.relative_to(root).as_posix()}/{stem}"
+
+
+def _casia_sources(stem: str) -> list[str]:
+    """Source photographs named inside one CASIA file, lowercase and unseparated.
+
+    ``Au_ani_00018`` is the photograph itself; ``Tp_D_CND_M_N_ani00018_sec00096_00138``
+    is that photograph with a patch taken from another. Both yield the ids they are
+    built from, so the two files can be recognised as the same scene. Returns an
+    empty list for names that do not follow the convention.
+    """
+    parts = stem.split("_")
+    if len(parts) == 3 and parts[0].lower() == "au" and parts[2].isdigit():
+        return [f"{parts[1]}{parts[2]}".lower()]
+    if len(parts) == 8 and parts[0].lower() == "tp":
+        first, second = parts[5], parts[6]
+        if re.fullmatch(r"[A-Za-z]+\d+", first) and re.fullmatch(r"[A-Za-z]+\d+", second):
+            return [first.lower(), second.lower()]
+    return []
+
+
+def _linked_scene_keys(images: list[Path], root: Path) -> dict[Path, str] | None:
+    """Scene id per file, joining a CASIA original to every forgery made from it.
+
+    Keyed by file stem, ``Au_ani_00018.jpg`` and
+    ``Tp_D_CND_M_N_ani00018_sec00096_00138.tif`` land in different folds. They are
+    the same photograph -- one untouched, one with a patch pasted in -- so the
+    model sees identical content labelled authentic in train and tampered in test.
+    That is the most damaging leak available, and unlike ordinary leakage it
+    inflates the score instead of degrading it.
+
+    Linking has to be transitive, not pairwise: CASIA reuses a small pool of
+    photographs, and 3020 of its 5123 forgeries trace back to 796 shared
+    originals through chains of overlapping source ids.
+
+    Returns ``None`` when the names follow some other convention, so layouts like
+    CoMoFoD and COVERAGE keep the per-file key.
+    """
+    parsed: dict[Path, list[str]] = {}
+    for path in images:
+        sources = _casia_sources(path.stem)
+        if sources:
+            parsed[path] = sources
+    if not parsed or len(parsed) < 0.9 * len(images):
+        return None
+
+    parent: dict[str, str] = {}
+
+    def find(item: str) -> str:
+        parent.setdefault(item, item)
+        while parent[item] != item:
+            parent[item] = parent[parent[item]]
+            item = parent[item]
+        return item
+
+    def union(left: str, right: str) -> None:
+        a, b = find(left), find(right)
+        if a != b:
+            parent[b] = a
+
+    for sources in parsed.values():
+        for source in sources:
+            find(source)
+        for other in sources[1:]:
+            union(sources[0], other)
+
+    # Name each component after its lowest member so the id does not depend on
+    # the order files happened to be listed in.
+    members: dict[str, list[str]] = {}
+    for source in parent:
+        members.setdefault(find(source), []).append(source)
+    naming = {root_id: min(group) for root_id, group in members.items()}
+
+    keys: dict[Path, str] = {}
+    for path, sources in parsed.items():
+        keys[path] = naming[find(sources[0])]
+    return keys
+
+
+def _stratified_cap(frame: pd.DataFrame, max_images: int, seed: int) -> pd.DataFrame:
+    rng = np.random.default_rng(seed)
+    keep: list[int] = []
+    for _, group in frame.groupby(["dataset", "label"], sort=False):
+        take = max(1, int(round(max_images * len(group) / len(frame))))
+        indices = rng.choice(group.index.to_numpy(), size=min(take, len(group)), replace=False)
+        keep.extend(int(i) for i in indices)
+    return frame.loc[sorted(keep)]
+
+
+def content_fingerprint(paths) -> str:
+    """Digest of the pixels behind a list of files, cheap enough to run often.
+
+    Sample ids are positional (``00000_authentic``), so regenerating a benchmark
+    with a different seed reuses every id while changing every image. Hashing
+    size plus the first block of each file catches that; modification times would
+    also be invalidated by copying a tree, and hashing whole files would read
+    gigabytes on a real-resolution benchmark.
+    """
+    digest = hashlib.blake2b(digest_size=16)
+    for path in paths:
+        try:
+            stat = os.stat(str(path))
+            with open(str(path), "rb") as handle:
+                head = handle.read(8192)
+        except OSError:
+            digest.update(b"missing")
+            continue
+        digest.update(str(stat.st_size).encode("ascii"))
+        digest.update(head)
+    return digest.hexdigest()
+
+
+def assign_grouped_splits(
+    frame: pd.DataFrame,
+    seed: int = 42,
+    fractions: tuple[float, float, float] = (0.7, 0.15, 0.15),
+) -> pd.DataFrame:
+    """Split by ``source_id`` so no scene leaks across folds.
+
+    Groups are placed whole, largest first, each into whichever fold is furthest
+    below target on *both* total rows and positive rows.
+
+    Balancing rows alone is not enough. Slicing the shuffled group list by count
+    ignores group size, and balancing only row totals ignores class: in CASIA one
+    linked scene holds 59% of every tampered image, so placing it by row count
+    fills that fold's positives and leaves the other folds with almost none --
+    a held-out set that cannot measure anything. Weighting the positive deficit
+    as well keeps every fold class-usable.
+
+    A single scene cannot be divided, so the leftover skew is a property of the
+    benchmark, not of this function: the fold holding the largest scene will carry
+    a higher forged rate than the others no matter how groups are placed.
+    """
+    frame = frame.copy()
+    positives = (frame["label"] == 1).astype(int)
+    stats = frame.assign(_pos=positives).groupby("source_id").agg(
+        rows=("label", "size"), pos=("_pos", "sum")
+    )
+
+    order = list(stats.index)
+    np.random.default_rng(seed).shuffle(order)
+    # Stable sort on size keeps the shuffle as the tie-breaker.
+    order.sort(key=lambda group: -stats.loc[group, "rows"])
+
+    total_rows = len(frame)
+    total_pos = int(positives.sum())
+    target_rows = [fraction * total_rows for fraction in fractions]
+    target_pos = [fraction * total_pos for fraction in fractions]
+    names = ["train", "validation", "test"]
+    filled_rows = [0.0, 0.0, 0.0]
+    filled_pos = [0.0, 0.0, 0.0]
+    assignment: dict[str, str] = {}
+
+    for group in order:
+        rows = float(stats.loc[group, "rows"])
+        pos = float(stats.loc[group, "pos"])
+
+        def deficit(index: int) -> float:
+            row_gap = target_rows[index] - filled_rows[index]
+            pos_gap = target_pos[index] - filled_pos[index]
+            return row_gap / max(target_rows[index], 1.0) + pos_gap / max(target_pos[index], 1.0)
+
+        index = max(range(3), key=deficit)
+        assignment[group] = names[index]
+        filled_rows[index] += rows
+        filled_pos[index] += pos
+
+    frame["split"] = frame["source_id"].map(assignment)
+    return frame
+
+
+def available_real_datasets() -> dict[str, str]:
+    """Dataset name -> expected local directory, for CLI discovery.
+
+    ``casia2_mod`` is not downloaded: it is derived from the CASIA v2.0 archive
+    by ``python src/modified_casia.py build``, which removes the file-format cue
+    the public packaging leaves behind (see the base paper's section 4.1.3).
+    """
+    return {
+        "casia2": "data/real/casia2",
+        "casia2_mod": "data/real/casia2_mod",
+        "comofod": "data/real/comofod",
+        "coverage": "data/real/coverage",
+        "columbia": "data/real/columbia",
+    }

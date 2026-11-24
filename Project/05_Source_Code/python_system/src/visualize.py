@@ -1,0 +1,632 @@
+"""Generate figures and presentation artifacts from the experiment outputs."""
+
+from __future__ import annotations
+
+import base64
+import json
+from pathlib import Path
+
+import matplotlib
+
+matplotlib.use("Agg")
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from PIL import Image
+
+
+PALETTE = {
+    "navy": "#172554",
+    "blue": "#2563eb",
+    "cyan": "#0891b2",
+    "green": "#059669",
+    "amber": "#d97706",
+    "red": "#dc2626",
+    "slate": "#475569",
+    "light": "#eff6ff",
+}
+
+
+def _style(ax, title: str) -> None:
+    ax.set_title(title, loc="left", fontweight="bold", color=PALETTE["navy"])
+    ax.grid(axis="y", alpha=0.2)
+    ax.spines[["top", "right"]].set_visible(False)
+
+
+def _save(fig, path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fig.tight_layout()
+    fig.savefig(path, dpi=170, bbox_inches="tight")
+    plt.close(fig)
+
+
+def generate_figures(frame: pd.DataFrame, results: dict[str, object], figure_dir: Path) -> list[str]:
+    figure_dir.mkdir(parents=True, exist_ok=True)
+    generated: list[str] = []
+
+    # 1. Class and tamper distribution.
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.4))
+    class_counts = frame["label"].map({0: "Authentic", 1: "Manipulated"}).value_counts().reindex(["Authentic", "Manipulated"])
+    axes[0].bar(class_counts.index, class_counts.values, color=[PALETTE["green"], PALETTE["red"]])
+    axes[0].set_ylabel("Image instances")
+    _style(axes[0], "Balanced benchmark")
+    for idx, value in enumerate(class_counts.values):
+        axes[0].text(idx, value, str(value), ha="center", va="bottom", fontweight="bold")
+    tamper_counts = frame[frame["label"] == 1]["tamper_type"].value_counts().sort_values()
+    axes[1].barh(tamper_counts.index, tamper_counts.values, color=PALETTE["blue"])
+    axes[1].set_xlabel("Image instances")
+    _style(axes[1], "Manipulation families")
+    _save(fig, figure_dir / "dataset_distribution.png")
+    generated.append("dataset_distribution.png")
+
+    # 2. Comparison against majority baseline.
+    metric_names = ["balanced_accuracy", "f1", "roc_auc", "pr_auc"]
+    labels = ["Majority", "Forensic features"]
+    values = [
+        [float(results["majority_baseline"][metric]) for metric in metric_names],
+        [float(results["test"][metric]) for metric in metric_names],
+    ]
+    fig, ax = plt.subplots(figsize=(9, 4.6))
+    x = np.arange(len(metric_names))
+    width = 0.36
+    ax.bar(x - width / 2, values[0], width, label=labels[0], color=PALETTE["slate"])
+    ax.bar(x + width / 2, values[1], width, label=labels[1], color=PALETTE["blue"])
+    ax.set_xticks(x, [name.replace("_", " ").title() for name in metric_names])
+    ax.set_ylim(0, 1.05)
+    ax.set_ylabel("Score")
+    ax.legend(frameon=False)
+    _style(ax, "Model evidence: baseline vs. trained detector")
+    _save(fig, figure_dir / "model_comparison.png")
+    generated.append("model_comparison.png")
+
+    # 3. ROC and precision-recall curves.
+    fig, axes = plt.subplots(1, 2, figsize=(11, 4.5))
+    roc = results["roc_curve"]
+    axes[0].plot(roc["fpr"], roc["tpr"], color=PALETTE["blue"], linewidth=2.5, label=f"AUC={results['test']['roc_auc']:.3f}")
+    axes[0].plot([0, 1], [0, 1], "--", color=PALETTE["slate"], alpha=0.7)
+    axes[0].set(xlabel="False-positive rate", ylabel="True-positive rate", xlim=(0, 1), ylim=(0, 1.02))
+    axes[0].legend(frameon=False)
+    _style(axes[0], "ROC curve")
+    pr = results["pr_curve"]
+    axes[1].plot(pr["recall"], pr["precision"], color=PALETTE["green"], linewidth=2.5, label=f"AP={results['test']['pr_auc']:.3f}")
+    axes[1].set(xlabel="Recall", ylabel="Precision", xlim=(0, 1), ylim=(0, 1.02))
+    axes[1].legend(frameon=False)
+    _style(axes[1], "Precision-recall curve")
+    _save(fig, figure_dir / "roc_pr_curves.png")
+    generated.append("roc_pr_curves.png")
+
+    # 4. Confusion matrix.
+    matrix = np.asarray(results["test"]["confusion_matrix"])
+    fig, ax = plt.subplots(figsize=(5.2, 4.5))
+    image = ax.imshow(matrix, cmap="Blues")
+    ax.set_xticks([0, 1], ["Authentic", "Manipulated"])
+    ax.set_yticks([0, 1], ["Authentic", "Manipulated"])
+    ax.set_xlabel("Predicted label")
+    ax.set_ylabel("True label")
+    for (row, col), value in np.ndenumerate(matrix):
+        ax.text(col, row, int(value), ha="center", va="center", fontsize=15, fontweight="bold", color="white" if value > matrix.max() * 0.55 else PALETTE["navy"])
+    fig.colorbar(image, ax=ax, fraction=0.046, pad=0.04)
+    _style(ax, "Held-out test confusion matrix")
+    _save(fig, figure_dir / "confusion_matrix.png")
+    generated.append("confusion_matrix.png")
+
+    # 5. Model feature importances.
+    importances = results.get("feature_importances") or []
+    top = list(reversed(importances[:12]))
+    fig, ax = plt.subplots(figsize=(8, 5.5))
+    if top:
+        names = [entry["feature"] for entry in top]
+        values = [entry["value"] for entry in top]
+        colors = [PALETTE["red"] if value > 0 else PALETTE["cyan"] for value in values]
+        ax.barh(names, values, color=colors)
+        ax.axvline(0, color=PALETTE["slate"], linewidth=0.8)
+        ax.set_xlabel("Signed contribution of the selected model")
+        _style(ax, "Most influential forensic features")
+    else:
+        ax.text(0.5, 0.5, "Selected model exposes no global importances", ha="center", va="center")
+        ax.axis("off")
+    _save(fig, figure_dir / "feature_importances.png")
+    generated.append("feature_importances.png")
+
+    # 6. Robustness sweep.
+    robustness = results["robustness"]
+    conditions = list(robustness.keys())
+    fig, ax = plt.subplots(figsize=(9, 4.6))
+    x = np.arange(len(conditions))
+    ax.plot(x, [robustness[name]["roc_auc"] for name in conditions], marker="o", linewidth=2.5, label="ROC-AUC", color=PALETTE["blue"])
+    ax.plot(x, [robustness[name]["balanced_accuracy"] for name in conditions], marker="o", linewidth=2.5, label="Balanced accuracy", color=PALETTE["amber"])
+    ax.plot(x, [robustness[name]["f1"] for name in conditions], marker="o", linewidth=2.5, label="F1", color=PALETTE["green"])
+    ax.set_xticks(x, conditions)
+    ax.set_ylim(0, 1.05)
+    ax.set_ylabel("Score")
+    ax.legend(frameon=False, ncol=3)
+    _style(ax, "Robustness under post-processing")
+    _save(fig, figure_dir / "robustness.png")
+    generated.append("robustness.png")
+
+    # 7. Held-out tampered examples beside their ground-truth masks.
+    #
+    # This used to look up an authentic twin in the same scene, which only exists
+    # in the synthetic benchmark where every source yields exactly one forgery.
+    # Real benchmarks do not guarantee that pairing, so the lookup raised on CASIA.
+    # The masks are the better thing to show anyway: they were stored for every
+    # manipulated image and never rendered, and they are what localisation work
+    # will be scored against.
+    # Sample across families. Taking the first N rows in path order gives an
+    # all-one-family figure, because CASIA sorts its copy-move files ahead of its
+    # spliced ones.
+    held_out = frame[(frame["split"] == "test") & (frame["label"] == 1)]
+    sample_rows = list(held_out.groupby("tamper_type", group_keys=False).head(3).head(6).iterrows())
+    fig, axes = plt.subplots(
+        max(len(sample_rows), 1), 2, figsize=(6.4, max(5.0, len(sample_rows) * 2.1)),
+        gridspec_kw={"hspace": 0.45},
+    )
+    if len(sample_rows) == 1:
+        axes = np.asarray([axes])
+    for idx, (_, row) in enumerate(sample_rows):
+        image = Image.open(row["image_path"]).convert("RGB")
+        axes[idx, 0].imshow(image)
+        axes[idx, 0].set_title("Tampered" if idx == 0 else "", loc="left", fontweight="bold")
+        axes[idx, 0].axis("off")
+
+        mask_path = row.get("mask_path")
+        mask = None
+        if isinstance(mask_path, str) and mask_path and Path(mask_path).is_file():
+            with Image.open(mask_path) as handle:
+                # Masks are not always stored at the image's resolution, so resample
+                # nearest-neighbour rather than trusting the two to agree.
+                mask = np.asarray(handle.convert("L").resize(image.size, Image.NEAREST))
+        if mask is not None:
+            axes[idx, 1].imshow(image)
+            axes[idx, 1].imshow(
+                np.ma.masked_where(mask == 0, mask), cmap="autumn", alpha=0.6, vmin=0, vmax=255
+            )
+            axes[idx, 1].set_title(
+                "Ground-truth mask" if idx == 0 else str(row["tamper_type"]),
+                loc="left",
+                fontweight="bold" if idx == 0 else "normal",
+                fontsize=11 if idx == 0 else 9,
+            )
+        else:
+            axes[idx, 1].axis("off")
+        axes[idx, 1].axis("off")
+    fig.suptitle(
+        "Held-out tampered images with ground-truth masks",
+        x=0.05, ha="left", fontweight="bold", color=PALETTE["navy"],
+    )
+    _save(fig, figure_dir / "sample_pairs.png")
+    generated.append("sample_pairs.png")
+
+    # 8. Region localisation. Dice and IoU per method, and per tamper family,
+    # because the two localisers are different claims: one uses the trained
+    # detector, the other uses no model at all.
+    loc = results.get("localisation") or {}
+    if loc.get("available"):
+        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(11.2, 4.4))
+        methods = ["tiled", "ela"]
+        metrics = ["dice", "iou", "hit_rate"]
+        colours = [PALETTE["navy"], PALETTE["amber"], PALETTE["cyan"]]
+        width = 0.24
+        positions = np.arange(len(methods))
+        for offset, metric, colour in zip([-width, 0, width], metrics, colours):
+            values = [float(loc[method].get(metric, 0.0)) for method in methods]
+            ax_left.bar(positions + offset, values, width, label=metric.upper(), color=colour)
+            for x_pos, value in zip(positions + offset, values):
+                ax_left.text(x_pos, value + 0.02, f"{value:.2f}", ha="center", fontsize=9)
+        ax_left.set_xticks(positions, ["learned tiles", "ELA tiles"])
+        ax_left.set_ylim(0, 1.05)
+        ax_left.set_ylabel("Score")
+        ax_left.legend(frameon=False, ncol=3)
+        _style(ax_left, "Localisation on held-out forgeries")
+
+        families = sorted((loc["tiled"].get("by_family") or {}).keys())
+        for offset, metric, colour in zip([-width / 2, width / 2], ["dice", "iou"], colours[:2]):
+            values = [float((loc["tiled"]["by_family"][f] or {}).get(metric, 0.0)) for f in families]
+            ax_right.bar(np.arange(len(families)) + offset, values, width, label=metric.upper(), color=colour)
+        ax_right.set_xticks(np.arange(len(families)), families, fontsize=9)
+        ax_right.set_ylim(0, 1.05)
+        ax_right.set_ylabel("Score")
+        ax_right.legend(frameon=False)
+        _style(ax_right, f"Localisation by family (tile {loc.get('tile')}, stride {loc.get('stride')})")
+        _save(fig, figure_dir / "localisation.png")
+        generated.append("localisation.png")
+
+    # 9. Zero-shot transfer. In-domain sits on the left of every group and each
+    # untouched corpus beside it, so the drop is the visible part of the picture
+    # rather than a sentence in the limitations section.
+    cross = results.get("cross_dataset") or {}
+    in_domain = results["test"]
+    loc_ready = bool(loc.get("available"))
+    cross_blocks = {
+        key: value
+        for key, value in (cross.get("datasets") or {}).items()
+        if value.get("available")
+    }
+    if cross_blocks:
+        names = sorted(cross_blocks)
+        labels = [str(results["experiment"].get("benchmark_source", "in-domain"))] + names
+        columns = {
+            "ROC-AUC": [in_domain["roc_auc"]] + [cross_blocks[n]["image_level"]["roc_auc"] for n in names],
+            "Balanced acc": [in_domain["balanced_accuracy"]]
+            + [cross_blocks[n]["image_level"]["balanced_accuracy"] for n in names],
+            "MCC": [in_domain["mcc"]] + [cross_blocks[n]["image_level"]["mcc"] for n in names],
+        }
+        colours = [PALETTE["blue"], PALETTE["amber"], PALETTE["cyan"]]
+        fig, (ax_left, ax_right) = plt.subplots(1, 2, figsize=(11.8, 4.4))
+        positions = np.arange(len(columns))
+        width = 0.8 / len(labels)
+        for index, label in enumerate(labels):
+            values = [columns[metric][index] for metric in columns]
+            ax_left.bar(
+                positions + index * width - 0.4 + width / 2,
+                values,
+                width,
+                label=label,
+                color=colours[index % len(colours)],
+            )
+        ax_left.set_ylim(0, 1.02)
+        ax_left.set_xticks(positions)
+        ax_left.set_xticklabels(list(columns))
+        ax_left.legend(frameon=False, fontsize=8)
+        _style(ax_left, "Image-level detection: trained vs never-seen")
+
+        region_methods = [("tiled", "learned tiles"), ("ela", "ELA tiles")]
+        group_labels = labels
+        grid = np.arange(len(group_labels))
+        for offset, (method, display) in enumerate(region_methods):
+            values = []
+            for index, _ in enumerate(group_labels):
+                if index == 0:
+                    block = loc if loc_ready else {}
+                else:
+                    block = cross_blocks[names[index - 1]].get("localisation") or {}
+                values.append(block[method]["dice"] if block.get("available") else np.nan)
+            ax_right.bar(
+                grid - 0.18 + offset * 0.36,
+                values,
+                0.34,
+                label=display,
+                color=[PALETTE["navy"], PALETTE["slate"]][offset],
+            )
+        ax_right.set_ylim(0, 1.0)
+        ax_right.set_xticks(grid)
+        ax_right.set_xticklabels(group_labels, fontsize=8)
+        ax_right.set_ylabel("Dice")
+        ax_right.legend(frameon=False, fontsize=8)
+        _style(ax_right, "Tampered-region localisation")
+        ax_right.text(
+            0.5,
+            -0.34,
+            "A corpus with no scored masks shows no bar. External numbers use the "
+            "training corpus's thresholds, so they are transfer, not refitting.",
+            transform=ax_right.transAxes,
+            ha="center",
+            fontsize=7.5,
+            color=PALETTE["slate"],
+        )
+        _save(fig, figure_dir / "cross_dataset.png")
+        generated.append("cross_dataset.png")
+
+    # 10. System architecture diagram as editable SVG plus PNG.
+    fig, ax = plt.subplots(figsize=(13, 3.6))
+    ax.set_xlim(0, 13)
+    ax.set_ylim(0, 4)
+    ax.axis("off")
+    boxes = [
+        (0.3, "Input image\nPNG/JPEG", PALETTE["light"]),
+        (2.8, "Integrity layer\nSHA-256 + audit", "#ecfdf5"),
+        (5.3, "AI detector\nforensic features", "#eff6ff"),
+        (7.8, "Risk decision\nauthentic / review", "#fff7ed"),
+        (10.3, "Protection\nAES-GCM storage", "#fdf2f8"),
+    ]
+    for x0, label, color in boxes:
+        rect = plt.Rectangle((x0, 1.35), 2.0, 1.3, facecolor=color, edgecolor=PALETTE["navy"], linewidth=1.4, joinstyle="round")
+        ax.add_patch(rect)
+        ax.text(x0 + 1, 2.0, label, ha="center", va="center", color=PALETTE["navy"], fontweight="bold")
+    for left in [2.3, 4.8, 7.3, 9.8]:
+        ax.annotate("", xy=(left + 0.5, 2.0), xytext=(left, 2.0), arrowprops={"arrowstyle": "->", "lw": 1.8, "color": PALETTE["blue"]})
+    ax.text(6.5, 3.35, "AI-assisted image security and protection pipeline", ha="center", fontsize=16, fontweight="bold", color=PALETTE["navy"])
+    ax.text(6.5, 0.55, "The detector screens for manipulation; cryptography verifies/protects bytes but does not prove visual authenticity.", ha="center", fontsize=9.5, color=PALETTE["slate"])
+    _save(fig, figure_dir / "system_diagram.svg")
+    fig, ax = plt.subplots(figsize=(13, 3.6))
+    # Recreate a PNG because the previous figure was closed after SVG output.
+    ax.set_xlim(0, 13); ax.set_ylim(0, 4); ax.axis("off")
+    for x0, label, color in boxes:
+        ax.add_patch(plt.Rectangle((x0, 1.35), 2.0, 1.3, facecolor=color, edgecolor=PALETTE["navy"], linewidth=1.4))
+        ax.text(x0 + 1, 2.0, label, ha="center", va="center", color=PALETTE["navy"], fontweight="bold")
+    for left in [2.3, 4.8, 7.3, 9.8]:
+        ax.annotate("", xy=(left + 0.5, 2.0), xytext=(left, 2.0), arrowprops={"arrowstyle": "->", "lw": 1.8, "color": PALETTE["blue"]})
+    ax.text(6.5, 3.35, "AI-assisted image security and protection pipeline", ha="center", fontsize=16, fontweight="bold", color=PALETTE["navy"])
+    ax.text(6.5, 0.55, "Screen manipulation, verify bytes, encrypt stored content, and log the decision.", ha="center", fontsize=9.5, color=PALETTE["slate"])
+    _save(fig, figure_dir / "system_diagram.png")
+    generated.append("system_diagram.svg")
+    generated.append("system_diagram.png")
+    return generated
+
+
+def _embed(path: Path) -> str:
+    mime = "image/svg+xml" if path.suffix == ".svg" else "image/png"
+    data = base64.b64encode(path.read_bytes()).decode("ascii")
+    return f"data:{mime};base64,{data}"
+
+
+def write_presentation_artifacts(
+    frame: pd.DataFrame,
+    results: dict[str, object],
+    protection: dict[str, object],
+    figure_dir: Path,
+    report_dir: Path,
+    presentation_dir: Path,
+) -> None:
+    """Write a self-contained visual dashboard and speaker-note markdown."""
+    report_dir.mkdir(parents=True, exist_ok=True)
+    presentation_dir.mkdir(parents=True, exist_ok=True)
+    test = results["test"]
+    experiment = results["experiment"]
+    is_real = experiment.get("benchmark_kind") == "real"
+    source = str(experiment.get("benchmark_source", "cifar10"))
+    subtitle = (
+        f"Current-status evidence dashboard · real forgeries from {source}"
+        if is_real
+        else "Current-status evidence dashboard · source-safe synthetic pilot benchmark"
+    )
+    groups_note = "linked by shared source photograph" if is_real else "split before manipulation"
+
+    # Localisation is optional at run time (--localise-limit 0 skips it), so every
+    # reader below has to cope with the block being absent rather than empty.
+    loc = results.get("localisation") or {}
+    loc_ready = bool(loc.get("available"))
+    if loc_ready:
+        loc_sentence = (
+            f" Region localisation is measured, not assumed: tiled inference reaches "
+            f"Dice {loc['tiled']['dice']:.3f} and ELA tiles {loc['ela']['dice']:.3f}."
+        )
+    else:
+        loc_sentence = ""
+
+    if is_real:
+        interpretation = (
+            "<b>Interpretation:</b> the corpus is <b>"
+            f"{experiment['corpus']}</b> — real tampered photographs, not edits this "
+            "project generated. Splits are grouped by source photograph so a scene "
+            f"cannot appear in two folds, and the leakage check <b>"
+            f"{'passed' if results['group_leakage_check']['passed'] else 'FAILED'}</b>. "
+            "The limiting factor is now the 143-feature handcrafted bank, not the data."
+            + loc_sentence
+        )
+        milestone = (
+            "Keep CoMoFoD and COVERAGE as untouched external test sets and report "
+            "their image-level and localisation numbers next to CASIA's, then compare "
+            "this handcrafted baseline against a small fine-tuned CNN and a hybrid that "
+            "feeds the same forensic features to the network."
+        )
+    else:
+        interpretation = (
+            "<b>Interpretation:</b> this is a functioning research baseline. The "
+            f"current corpus is <b>{experiment['corpus']}</b>, evaluated on "
+            "source-grouped splits with the leakage check "
+            f"<b>{'passed' if results['group_leakage_check']['passed'] else 'FAILED'}</b>. "
+            "Synthetic manipulations still bound how far these numbers generalise."
+        )
+        milestone = (
+            "Add CASIA v2.0 and CoMoFoD small, group all variants by source scene, "
+            "keep one external dataset untouched, and compare this interpretable "
+            "baseline against a small CNN."
+        )
+    html_images = [
+        ("System architecture", "system_diagram.png"),
+        ("Dataset distribution", "dataset_distribution.png"),
+        ("Model comparison", "model_comparison.png"),
+        ("ROC and PR curves", "roc_pr_curves.png"),
+        ("Confusion matrix", "confusion_matrix.png"),
+        ("Feature explanation", "feature_importances.png"),
+        ("Robustness", "robustness.png"),
+    ]
+    # _embed reads bytes eagerly, so a figure this run did not produce has to be
+    # left out of the list rather than inlined as a broken image.
+    if loc_ready:
+        html_images.append(("Region localisation", "localisation.png"))
+    if (results.get("cross_dataset") or {}).get("datasets"):
+        html_images.append(("Zero-shot transfer", "cross_dataset.png"))
+    html_images.append(("Sample pairs", "sample_pairs.png"))
+
+    loc_card = (
+        f'<div class="metric"><span>Tampered-region Dice</span><b>{loc["tiled"]["dice"]:.3f}</b>'
+        f'<small>IoU {loc["tiled"]["iou"]:.3f}, hit rate {loc["tiled"]["hit_rate"]:.3f}</small></div>'
+        if loc_ready
+        else ""
+    )
+    cards = "\n".join(
+        f'<figure><img alt="{title}" src="{_embed(figure_dir / filename)}"><figcaption>{title}</figcaption></figure>'
+        for title, filename in html_images
+    )
+    tamper_rows = "".join(
+        f"<tr><td>{name}</td><td>{entry['count']}</td><td>{entry['roc_auc']:.3f}</td>"
+        f"<td>{entry['recall']:.3f}</td><td>{entry['mean_risk_score']:.3f}</td></tr>"
+        for name, entry in results.get("per_family", {}).items()
+    )
+    model_rows = "".join(
+        f"<tr><td>{name}</td><td>{entry['test']['roc_auc']:.3f}</td>"
+        f"<td>{entry['test']['balanced_accuracy']:.3f}</td><td>{entry['test']['f1']:.3f}</td>"
+        f"<td>{entry['test']['mcc']:.3f}</td></tr>"
+        for name, entry in results.get("model_comparison", {}).items()
+    )
+    html = f"""<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><title>AI Image Security — Current Status</title>
+<style>
+body{{font-family:Inter,system-ui,sans-serif;background:#f8fafc;color:#172554;margin:0;padding:32px}}main{{max-width:1200px;margin:auto}}h1{{font-size:2.4rem;margin:0 0 8px}}h2{{margin-top:36px}}.subtitle{{color:#475569;font-size:1.05rem}}.cards{{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin:24px 0}}.metric{{background:white;border:1px solid #dbeafe;border-radius:14px;padding:16px;box-shadow:0 4px 14px #17255412}}.metric b{{font-size:1.7rem;display:block;color:#2563eb}}.gallery{{display:grid;grid-template-columns:repeat(2,1fr);gap:18px}}figure{{margin:0;background:white;border-radius:14px;padding:14px;box-shadow:0 4px 14px #17255412}}figure img{{width:100%;height:auto;border-radius:8px}}figcaption{{font-weight:700;margin-top:8px}}table{{border-collapse:collapse;background:white;width:100%;border-radius:12px;overflow:hidden}}th,td{{padding:10px;border-bottom:1px solid #e2e8f0;text-align:left}}th{{background:#eff6ff}}.note{{background:#fff7ed;border-left:4px solid #d97706;padding:16px;border-radius:8px;margin:20px 0}}@media(max-width:800px){{.cards,.gallery{{grid-template-columns:1fr 1fr}}}}@media(max-width:560px){{.cards,.gallery{{grid-template-columns:1fr}}}}
+</style></head><body><main>
+<h1>AI-Based Image Security and Protection System</h1>
+<div class="subtitle">{subtitle}</div>
+<div class="cards">
+<div class="metric"><span>Test ROC-AUC</span><b>{test['roc_auc']:.3f}</b><small>threshold-independent ranking</small></div>
+<div class="metric"><span>Test F1</span><b>{test['f1']:.3f}</b><small>validation-selected threshold</small></div>
+<div class="metric"><span>Source groups</span><b>{results['experiment']['source_groups']:,}</b><small>{groups_note}</small></div>
+<div class="metric"><span>Hash + AES checks</span><b>{int(protection['reference_hash_matches']) + int(protection['mutated_file_rejected']) + int(protection['aes_gcm_round_trip']) + int(protection['aes_gcm_modified_ciphertext_rejected'])}/4</b><small>local protection demo</small></div>
+{loc_card}
+</div>
+<div class="note">{interpretation}</div>
+<h2>System and visual evidence</h2><div class="gallery">{cards}</div>
+<h2>Model comparison (held-out test)</h2><table><thead><tr><th>Model</th><th>ROC-AUC</th><th>Balanced accuracy</th><th>F1</th><th>MCC</th></tr></thead><tbody>{model_rows}</tbody></table>
+<h2>Per-manipulation evidence</h2><table><thead><tr><th>Manipulation</th><th>Test count</th><th>ROC-AUC (vs authentic)</th><th>Recall</th><th>Mean risk score</th></tr></thead><tbody>{tamper_rows}</tbody></table>
+<h2>Protection checks</h2><pre>{json.dumps(protection, indent=2)}</pre>
+<h2>Next research milestone</h2><p>{milestone}</p>
+</main></body></html>"""
+    (report_dir / "current_status.html").write_text(html, encoding="utf-8")
+
+    corpus_action = (
+        f"loads the {source} forgery benchmark distributed by its authors"
+        if is_real
+        else "downloads image data and creates source-safe tamper examples"
+    )
+    if loc_ready:
+        tiled, ela = loc["tiled"], loc["ela"]
+        localisation_bullet = (
+            f"- **Region localisation** ({loc['subset_limit']} images per split, {loc['tile']} px "
+            f"tiles at stride {loc['stride']}): learned tiles give Dice **{tiled['dice']:.3f}**, "
+            f"IoU **{tiled['iou']:.3f}**, hit rate **{tiled['hit_rate']:.3f}**; ELA tiles give Dice "
+            f"**{ela['dice']:.3f}**, IoU **{ela['iou']:.3f}**. On authentic images the tiled "
+            f"predictor falsely flags **{tiled['authentic_false_positive_area']:.3f}** of the area. "
+            "Weak region scores are a result, not a rounding error: a classifier fitted on whole "
+            "photographs loses context a 128-pixel crop cannot keep."
+        )
+    else:
+        localisation_bullet = "- **Region localisation:** not scored in this pass."
+
+    cross = results.get("cross_dataset") or {}
+    cross_blocks = {
+        key: value for key, value in (cross.get("datasets") or {}).items() if value.get("available")
+    }
+    if cross_blocks:
+        parts = "; ".join(
+            f"**{name}** bal-acc {block['image_level']['balanced_accuracy']:.3f}, "
+            f"ROC-AUC {block['image_level']['roc_auc']:.3f}, "
+            f"MCC {block['image_level']['mcc']:.3f} "
+            f"({block['scenes']} unseen scenes)"
+            for name, block in sorted(cross_blocks.items())
+        )
+        cross_bullet = (
+            f"- **Zero-shot transfer (never trained, never tuned on):** {parts}. The "
+            f"decision threshold {cross['training_threshold']:.2f} and the region "
+            "thresholds are carried over from the training corpus unchanged."
+        )
+        absent = sorted(
+            name
+            for name, block in (cross.get("datasets") or {}).items()
+            if not block.get("available")
+        )
+        if absent:
+            cross_bullet += f"\n  Not obtained in this pass: {', '.join(absent)}."
+        # One pooled transfer number hides the geometry story: a corpus whose
+        # forgeries are documented as five different transformations can score
+        # chance overall while being readable for exactly one of them.
+        stratified = "; ".join(
+            f"{name} — "
+            + ", ".join(
+                f"{family.removeprefix('copy_move_')} {value['roc_auc']:.2f}"
+                for family, value in sorted(block["by_tamper_type"].items())
+            )
+            for name, block in sorted(cross_blocks.items())
+            if block.get("by_tamper_type")
+        )
+        if stratified:
+            cross_bullet += (
+                "\n  - **By tamper geometry** (each family scored against that "
+                f"corpus's authentic images): {stratified}."
+            )
+    else:
+        cross_bullet = "- **Zero-shot transfer:** no external corpus was scored in this pass."
+    honesty_line = (
+        "the corpus is real tampered photographs and the splits are scene-grouped, "
+        "so these numbers characterise this dataset rather than prove a universal "
+        "detector; region localisation is reported even where it is weak."
+        if is_real
+        else "this pilot uses controlled synthetic edits on small images; it is "
+        "a working baseline, not proof of authenticity."
+    )
+    next_step_line = (
+        "zero-shot transfer to Columbia/COVERAGE and CoMoFoD, a fine-tuned CNN "
+        "backbone, and a segmentation network that predicts the tampered region "
+        "instead of describing it."
+        if is_real
+        else "external datasets (CASIA v2.0, CoMoFoD small, and an untouched "
+        "external test set), a CNN comparison, and robustness/calibration analysis."
+    )
+    md = f"""# Current Status Presentation — AI-Based Image Security and Protection System
+
+## 1. One-sentence update
+
+We have built and executed a reproducible baseline that {corpus_action}, trains an
+interpretable forensic detector, checks cryptographic protection, and generates
+visual evidence.
+
+## 2. What we can show today
+
+- **Dataset:** {results['experiment']['image_instances']:,} image instances from
+  {results['experiment']['source_groups']:,} source groups ({results['experiment']['corpus']}); balanced
+  authentic/manipulated labels.
+- **Manipulations:** {', '.join(results.get('per_family', {}).keys()) or 'none'}.
+- **Model:** {results['experiment']['selected_model']} over {results['experiment']['feature_count']}
+  forensic features (selected on validation ROC-AUC from {', '.join(results['experiment']['models_compared'])}).
+- **Held-out test:** ROC-AUC **{test['roc_auc']:.3f}** (95% CI {results['confidence_intervals']['test_roc_auc'][0]:.3f}–{results['confidence_intervals']['test_roc_auc'][1]:.3f}),
+  PR-AUC **{test['pr_auc']:.3f}**, balanced accuracy **{test['balanced_accuracy']:.3f}**, F1 **{test['f1']:.3f}**, MCC **{test['mcc']:.3f}**.
+{localisation_bullet}
+{cross_bullet}
+- **Leakage check:** no source group appears in two splits — **{results['group_leakage_check']['passed']}**.
+- **Training augmentation:** {results['experiment']['augmentation']['extra_training_rows']:,} extra rows from
+  {', '.join(results['experiment']['augmentation']['conditions']) or 'none'} (never from test data).
+- **Protection:** original hash match = **{protection['reference_hash_matches']}**;
+  mutated file rejected = **{protection['mutated_file_rejected']}**;
+  AES-GCM round trip = **{protection['aes_gcm_round_trip']}**;
+  modified ciphertext rejected = **{protection['aes_gcm_modified_ciphertext_rejected']}**.
+
+## 3. Suggested five-minute talk track
+
+1. **Problem:** images can be altered, and ordinary visual inspection is not
+   reliable at scale.
+2. **Threat model:** an attacker may copy, splice, recolour, or recompress an
+   image; our system screens for manipulation and logs the evidence.
+3. **Pipeline:** input → SHA-256/audit → forensic feature extraction → AI risk
+   score → human-review decision → optional AES-GCM storage.
+4. **Evidence:** show `figures/system_diagram.png`, then
+   `figures/model_comparison.png`, `figures/confusion_matrix.png`, and the
+   ROC/PR curves.
+5. **Honesty:** {honesty_line}
+6. **Next step:** {next_step_line}
+
+## 4. Questions the supervisor may ask
+
+**Why not report accuracy only?** Accuracy can hide class imbalance and threshold
+effects, so we report ROC-AUC, PR-AUC, balanced accuracy, F1, and a confusion
+matrix.
+
+**How did you avoid leakage?** We split source images into train/validation/test
+before generating manipulated counterparts. Variants from the same source stay in
+one split.
+
+**Does hashing detect a visual edit?** Only if a trusted original hash exists and
+the bytes changed. It complements—not replaces—the AI detector.
+
+**How do you know the model localises rather than just detects?** Image-level
+accuracy cannot tell those apart, so the tampered region is scored separately
+against the ground-truth masks (Dice, IoU, hit rate, and false-positive area on
+authentic images). Region thresholds are chosen on the validation split only.
+
+**How many datasets are needed?** One public dataset is sufficient for a pilot;
+the final study should use CASIA v2.0 + CoMoFoD small for development and CASIA
+v1.0 or COVERAGE as an untouched external test. Target 10,000–20,000 instances
+from at least 300 independent source groups.
+
+## 5. Files to open during the presentation
+
+- `reports/current_status.html` — visual dashboard.
+- `figures/system_diagram.png` — architecture.
+- `figures/sample_pairs.png` — authentic vs. manipulated examples.
+- `figures/model_comparison.png` — baseline vs. trained detector.
+- `figures/roc_pr_curves.png` — threshold-independent evidence.
+- `figures/localisation.png` — where the tampering is, not just whether.
+- `figures/robustness.png` — post-processing degradation.
+- `reports/results.json` — machine-readable metrics.
+- `docs_research_plan.md` — research questions, threat model, data protocol.
+"""
+    (presentation_dir / "current_status.md").write_text(md, encoding="utf-8")

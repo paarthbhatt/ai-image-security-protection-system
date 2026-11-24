@@ -1,0 +1,52 @@
+========================================================================
+   AI-BASED IMAGE SECURITY AND PROTECTION SYSTEM - JAVA PROTOTYPE
+   Software Engineering Lab Implementation Model (Layered Architecture)
+========================================================================
+
+----------------- SYSTEM OPERATIONS MENU -----------------
+1. Add & Screen New Image (AI Multi-Tiered Evaluation)
+2. Display All Managed Image Records & Security Vault
+3. Search Image Record by ID
+4. Verify Image Cryptographic Integrity (SHA-256 Bitstream)
+5. Lock Image Asset in Secure Vault (AES-256-GCM AEAD)
+6. Unlock Image Asset from Vault
+7. Delete / Quarantine Compromised Image Record
+8. Exit Application
+Select Operation (1-8): 2
+
+--- All Managed Image Security Records ---
+[101] Au_ani_00001.jpg         | JPG  |  65536 B | SHA: 752fd099... | M2:   2.2% | M4:   1.8% | Verdict: AUTHENTIC / PRISTINE | Vault: UNENCRYPTED
+[102] Tp_D_CNN_M_B_nat11105.jpg| JPG  |  65536 B | SHA: 04ee9a54... | M2:  68.2% | M4:  96.6% | Verdict: TAMPERED / FORGED   | Vault: UNENCRYPTED
+[103] columbia_splice_042.bmp  | BMP  |  65536 B | SHA: 8bfa120c... | M2:  39.5% | M4:  68.1% | Verdict: TAMPERED / FORGED   | Vault: UNENCRYPTED
+
+Select Operation (1-8): 1
+Enter Image ID (integer): 104
+Enter Filename (e.g., photo.jpg, doc.png): coverage_distractor_007.tif
+Enter Model 2 Forensic Risk (0.0 to 1.0): 0.526
+Enter Model 3 Deep Semantic Risk (0.0 to 1.0): 0.489
+
+[+] Image successfully screened and registered:
+[104] coverage_distractor_007.tif | TIF  |     38 B | SHA: e20c81bf... | M2:  52.6% | M4:  51.4% | Verdict: TAMPERED / FORGED   | Vault: UNENCRYPTED
+    -> Hybrid Risk Score (Model 4): 51.38%
+    -> Final Verdict: TAMPERED / FORGED
+
+Select Operation (1-8): 4
+Enter Image ID to verify integrity: 101
+Enter current payload string to simulate verification: Authentic animal natural photo 2026
+[SUCCESS] Bitstream matches reference digest! Integrity verified.
+
+Select Operation (1-8): 5
+Enter Image ID to lock in AES-GCM Vault: 101
+[VAULT] Image locked with AES-256-GCM. 96-bit cryptographic nonce generated.
+
+Select Operation (1-8): 3
+Enter Image ID to search: 101
+
+Record Found:
+[101] Au_ani_00001.jpg         | JPG  |  65536 B | SHA: 752fd099... | M2:   2.2% | M4:   1.8% | Verdict: AUTHENTIC / PRISTINE | Vault: AES-GCM (LOCKED)
+Full SHA-256: 752fd0993d356a7de7c618b10884b802613ba242bfcaad82a174d24d5d277bd7
+Vault Nonce:  d983421fbc0299e5a1b32f90
+Timestamp:    2026-11-24T09:45:12.182491Z
+
+Select Operation (1-8): 8
+Exiting Image Security and Protection System. Goodbye!

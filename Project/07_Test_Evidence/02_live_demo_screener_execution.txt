@@ -1,0 +1,60 @@
+
+>>> No image passed. Running dual live demo on Authentic vs Tampered test samples...
+
+[DEMO 1/2: Testing Known Authentic Image]
+
+============================================================================
+      AI-BASED IMAGE SECURITY AND PROTECTION SYSTEM: PRACTICAL SCREENER
+============================================================================
+[*] Input File        : Au_ani_00001.jpg
+[*] File Path         : /home/batman/Desktop/researchproject/data/real/casia2/Au/Au_ani_00001.jpg
+[*] Image Dimensions  : (384, 256) px
+[*] Processing Unit   : cuda (NVIDIA GeForce RTX 2050)
+----------------------------------------------------------------------------
+[SECTION 1: SOFTWARE ENGINEERING & CRYPTOGRAPHIC SECURITY]
+  [+] SHA-256 Digest     : 752fd0993d356a7d...d24d5d277bd7d3e2
+  [+] Bitstream Check    : PASSED (Integrity verified against bit tampering)
+  [+] AES-256-GCM Vault  : AUTHENTICATED (AEAD Round-Trip Verified)
+  [+] Tamper-Evident Tag : 128-bit Poly1305/GHASH Auth Tag attached
+----------------------------------------------------------------------------
+[SECTION 2: ARTIFICIAL INTELLIGENCE FORENSIC DETECTION]
+  [>] Extracting 143 signal forensic features (SRM, ELA, Wavelet MAD, DCT)...
+  [*] Model 2 (Classical Forensics GBDT) : P(Forged) =   2.2%  (Thresh: 36.0%) -> [AUTHENTIC]
+  [*] Model 4 (Multimodal Hybrid GBDT)   : P(Forged) =   0.0%  (Thresh: 15.5%) -> [AUTHENTIC]
+  [*] Visual Forensic Artifact           : Saved to reports/demo_ela_Au_ani_00001.png
+----------------------------------------------------------------------------
+[FINAL SECURITY & INTEGRITY VERDICT]
+  >>> STATUS  : [  AUTHENTIC / PRISTINE IMAGE ]
+  >>> RISK    : LOW RISK (Confidence: 100.0% Authentic)
+  >>> ACTION  : Verified. Bitstream and high-frequency forensic residuals consistent.
+============================================================================
+
+
+[DEMO 2/2: Testing Known Spliced/Tampered Image]
+
+============================================================================
+      AI-BASED IMAGE SECURITY AND PROTECTION SYSTEM: PRACTICAL SCREENER
+============================================================================
+[*] Input File        : Tp_D_CNN_M_B_nat00056_nat00099_11105.jpg
+[*] File Path         : /home/batman/Desktop/researchproject/data/real/casia2/Tp/Tp_D_CNN_M_B_nat00056_nat00099_11105.jpg
+[*] Image Dimensions  : (384, 256) px
+[*] Processing Unit   : cuda (NVIDIA GeForce RTX 2050)
+----------------------------------------------------------------------------
+[SECTION 1: SOFTWARE ENGINEERING & CRYPTOGRAPHIC SECURITY]
+  [+] SHA-256 Digest     : 04ee9a5473fb41de...83618937a0fcda8f
+  [+] Bitstream Check    : PASSED (Integrity verified against bit tampering)
+  [+] AES-256-GCM Vault  : AUTHENTICATED (AEAD Round-Trip Verified)
+  [+] Tamper-Evident Tag : 128-bit Poly1305/GHASH Auth Tag attached
+----------------------------------------------------------------------------
+[SECTION 2: ARTIFICIAL INTELLIGENCE FORENSIC DETECTION]
+  [>] Extracting 143 signal forensic features (SRM, ELA, Wavelet MAD, DCT)...
+  [*] Model 2 (Classical Forensics GBDT) : P(Forged) =  68.2%  (Thresh: 36.0%) -> [TAMPERED / FORGED]
+  [*] Model 4 (Multimodal Hybrid GBDT)   : P(Forged) =  96.6%  (Thresh: 15.5%) -> [TAMPERED / FORGED]
+  [*] Visual Forensic Artifact           : Saved to reports/demo_ela_Tp_D_CNN_M_B_nat00056_nat00099_11105.png
+----------------------------------------------------------------------------
+[FINAL SECURITY & INTEGRITY VERDICT]
+  >>> STATUS  : [ 🚨 TAMPERED / MANIPULATED IMAGE DETECTED ]
+  >>> RISK    : HIGH RISK FORGERY (Confidence: 96.6%)
+  >>> ACTION  : Quarantine file. Inconsistencies detected across compression & signal residuals.
+============================================================================
+
